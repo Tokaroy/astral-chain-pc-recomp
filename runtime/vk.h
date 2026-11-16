@@ -434,6 +434,7 @@ typedef struct {
     uint8_t skip;                  // AC_TEX_MIP_SKIP: the game's levels below this one are not in the image (vk_texture.c
                                    // mip_skip_of). Image level i holds the game's level i + skip; width, height and
                                    // levels above are the image's.
+    uint8_t fixed_format;          // made without MUTABLE_FORMAT (AC_TARGET_COMPRESSION): every view takes `format`
     uint64_t mem_size;             // bound: the bytes of pool memory from addr the image is bound over (its memory
                                    // requirements); images over overlapping bytes alias each other
     uint32_t sync_w, sync_r;       // the pass chain (vk_exec.c, replay thread only): VkExec.sync_epoch when a pass last

@@ -245,10 +245,31 @@ static int format_compressed(VkFormat f) {   // vkCmdClearColorImage takes no bl
            (f >= VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK && f <= VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK);
 }
 
+// AC_TARGET_COMPRESSION (default 0, being measured): colour render targets are made without MUTABLE_FORMAT. RADV keeps
+// delta colour compression off for a MUTABLE_FORMAT image without a format list below GFX11 (Mesa radv_image.c
+// radv_are_formats_dcc_compatible): the Steam Deck's GFX10.3 and every RDNA1/2 card on Linux rendered without it.
+// ANV does the same for 8- to 32-bit formats below gfx12.5 (Mesa anv_image.c formats_ccs_e_compatible: Tiger Lake to
+// Raptor Lake integrated GPUs). The replay views a render target in another format only through resolve_target's
+// view_format, which then keeps the texture's format (not one such view in title, menus and Harmony Square). The
+// compression metadata the driver adds after the pixels must not land on the game's next texture, so such an image is
+// not bound into pool memory when it needs more bytes than its storage (bind_pool_memory), as for depth.
+static int target_compression(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("TARGET_COMPRESSION", "0") == 1;
+        if (on) rt_log("vk: colour render targets made without MUTABLE_FORMAT, for the driver's colour compression "
+                       "(AC_TARGET_COMPRESSION)");
+    }
+    return on;
+}
+
+static uint64_t n_fixed, n_fixed_unbound;   // AC_TARGET_COMPRESSION: targets made so, those kept out of pool memory
+
 static int bind_pool_memory(VkCtx *c, Tex *e, VkImage img, uint64_t guest_size) {
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(c->device, img, &req);
     if ((e->f.depth || e->f.stencil) && req.size > guest_size) return 0;
+    if (e->pub.fixed_format && req.size > guest_size) return n_fixed_unbound++, 0;   // metadata past its storage
     VkMemSpan sp;
     if (!req.size) return 0;   // an image the device could not lay out (image_size)
     if (!vk_mem_resolve(e->pub.addr, req.size, &sp) || !sp.alloc || sp.alloc_offset % req.alignment) return 0;
@@ -705,7 +726,9 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     if (f.vk == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && samples == 1 &&
         (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && w >= 640 && vk_contact_strength())
         usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-    VkImageCreateFlags flags = ds ? 0 : VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   // format-reinterpreting views
+    // format-reinterpreting views; not for colour render targets under AC_TARGET_COMPRESSION (target_compression)
+    int fixed = !ds && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && target_compression();
+    VkImageCreateFlags flags = ds || fixed ? 0 : VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
     // Cube compatible only for cube targets: the replay makes cube views of nothing else (vk_exec_draw.c get_view checks
     // the image's own view type). The flag on every square array of 6+ layers changed how AMD's Windows driver lays such
     // an image out, and terrain material arrays sampled through it came out in rainbow blocks that moved with the mip
@@ -762,6 +785,8 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     e->f = f;
     e->last_use = submit_epoch;
     e->pub.addr = k->addr;
+    e->pub.fixed_format = (uint8_t)fixed;
+    n_fixed += fixed;
     e->bc_gen = bc_verdict >= 0 ? bc_gen : 0;
     VkImage img = VK_NULL_HANDLE;
     if (scale <= 1.0f && nvn_gpu_only(k->addr)) {   // storage in a physical or virtual pool: alias the pool memory (section 3.2)
@@ -2006,6 +2031,10 @@ void vk_texture_new_submit(void) {
         rt_log("perf: frame %llu: released textures kept %d, dropped under VRAM pressure %llu", (unsigned long long)f * 60,
                nreleased, (unsigned long long)n_pressure_drops);
         n_pressure_drops = 0;
+        if (n_fixed)
+            rt_log("perf: frame %llu: render targets made without MUTABLE_FORMAT %llu, %llu of them in own memory (their "
+                   "driver size past their storage)", (unsigned long long)f * 60, (unsigned long long)n_fixed,
+                   (unsigned long long)n_fixed_unbound);
     }
     unlock();
 }
