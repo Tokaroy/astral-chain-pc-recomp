@@ -347,8 +347,9 @@ static void resolve_target(const tex_t *t, const view_t *v, int has_v, int depth
             layers = 1;
         }
     } else if (!depth_slot && has_v && v->set_format && v->format != t->d.format) {
-        // an image made without MUTABLE_FORMAT (vk_texture.c target_compression) takes views of its own format only
-        if (view_format(t, v, 0, &fmt) && (fmt == img->format || !img->fixed_format)) nvn_fmt = v->format;
+        // an image made with a format list (vk_texture.c target_compression) takes views of the listed formats only
+        if (view_format(t, v, 0, &fmt) && (!img->format_list || fmt == img->format || fmt == img->view_twin))
+            nvn_fmt = v->format;
         else fmt = img->format, warn_once(W_VIEW_FORMAT, "render target view format %#x of a format %#x texture: "
                                           "texture format used", v->format, t->d.format);
     }
