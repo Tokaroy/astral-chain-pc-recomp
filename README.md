@@ -31,7 +31,8 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Custom resolutions up to 4K, or the screen's own (Automatic), and AMD FSR 1 scaling to the window
 - Temporal upscaling and anti-aliasing for the 3D scene, from native (DLAA / Native AA) to Ultra Performance: NVIDIA
   DLSS on RTX cards (with `nvngx_dlss.dll` next to `astralchain.exe`), Intel XeSS on most recent GPUs, AMD FSR 3 on any
-  GPU; the HUD stays at full resolution
+  GPU, AMD FSR 4 with AMD's FidelityFX SDK libraries (or fsr4-vk on Linux with RADV) next to the executable; the HUD
+  stays at full resolution
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance
 - Low latency mode: NVIDIA Reflex or AMD Anti-Lag 2 where the driver offers them, the port's own frame timing on any
   other GPU (Intel, Steam Deck); about a third less time from the controller to the screen at 60 fps, half at 30

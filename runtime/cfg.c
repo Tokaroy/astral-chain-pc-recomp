@@ -126,7 +126,7 @@ static const CfgMeta metas[] = {
     // FSR 3 Native AA) first, and the game's anti-aliasing for when none runs. The upscaler is live between what can run
     // in this run: NGX (dlss, auto) and libxess.dll (xess) are loaded at start for the choice made then; FSR 3 is built
     // in. The mode sets the size the game makes its scene targets at, once, at start. The values are in the menu's order.
-    {"UPSCALING", "off", "off|auto|dlss|xess|fsr3", LIVE},
+    {"UPSCALING", "off", "off|auto|dlss|xess|fsr3|fsr4", LIVE},
     {"UPSCALING_QUALITY", "native", "native|quality|balanced|performance|ultra_performance", RESTART},
     {"ANTI_ALIASING", "smaa", "off|smaa", LIVE},
     {"ASPECT", "wide", "fit|stretch|wide", LIVE}, {"FOV", "100", "70..140", LIVE},

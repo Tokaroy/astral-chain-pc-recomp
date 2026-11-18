@@ -16,6 +16,7 @@
 #include "platform/platform.h"
 #include "vk_dlaa.h"
 #include "vk_xess.h"
+#include "vk_fsr4.h"
 
 static VkCtx g_vk;
 static int g_ready;
@@ -233,6 +234,8 @@ typedef struct {
     VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mut;   // XeSS (vk_xess.c) only
     VkPhysicalDevicePresentIdFeaturesKHR pid;               // Reflex (vk_lowlat.c) only
     VkPhysicalDeviceAntiLagFeaturesAMD antilag;             // Anti-Lag 2 (vk_lowlat.c) only
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT dbuf;       // FSR 4 (vk_fsr4.c) only
+    VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR csd;   // FSR 4 (vk_fsr4.c) only
 } FeatureChain;
 
 static int create_device(void) {
@@ -281,6 +284,26 @@ static int create_device(void) {
     // XeSS's, when its whole list and every feature it asks for are there; its one non-core feature structure is chained
     if (vk_xess_device_exts(g_vk.instance, g_vk.phys, ep, ne, ext, &n_ext, 72))
         CHAIN(mut, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT);
+    // FSR 4 (vk_fsr4.c), only with upscaling = fsr4: AMD's shaders, run by fsr4-vk on RADV, bind through descriptor
+    // buffers and take derivatives in compute shaders; the rest they use (8/16-bit arithmetic, integer dot products,
+    // subgroup size control, buffer device addresses) is Vulkan 1.1-1.3 core and enabled with it below.
+    int has_dbuf = 0, has_csd = 0;
+    if (vk_fsr4_wanted()) {
+        if (has_ext(ep, ne, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME)) {
+            has_dbuf = 1;
+            ext[n_ext++] = VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME;
+            CHAIN(dbuf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT);
+        }
+        const char *csd_ext = has_ext(ep, ne, VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME)
+                                  ? VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME
+                              : has_ext(ep, ne, VK_NV_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME)
+                                  ? VK_NV_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME : NULL;
+        if (csd_ext) {
+            has_csd = 1;
+            ext[n_ext++] = csd_ext;
+            CHAIN(csd, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR);
+        }
+    }
     if (has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { g_vk.has_memory_budget = 1; ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME; }
     // GPU timestamps on the CPU clock (vk_sync.c): the perf line splits GPU idle time into waiting for a submission or not.
     if (has_ext(ep, ne, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)) { g_vk.has_calibrated = 2; ext[n_ext++] = VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME; }
@@ -343,6 +366,15 @@ static int create_device(void) {
     if (g_vk.has_nv_low_latency2 && !c->pid.presentId) g_vk.has_nv_low_latency2 = 0;   // the extension alone is not enough
     if (g_vk.has_amd_anti_lag && !c->antilag.antiLag) g_vk.has_amd_anti_lag = 0;
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
+    if (has_dbuf) {   // capture and replay is for tools, and costs the driver bookkeeping
+        c->dbuf.descriptorBufferCaptureReplay = VK_FALSE;
+    }
+    if (vk_fsr4_wanted())
+        rt_log("vk: for FSR 4: descriptorBuffer %d, computeDerivativeGroupLinear %d, shaderInt8 %d, shaderFloat16 %d, "
+               "shaderIntegerDotProduct %d, computeFullSubgroups %d, runtimeDescriptorArray %d",
+               has_dbuf && c->dbuf.descriptorBuffer, has_csd && c->csd.computeDerivativeGroupLinear, c->f12.shaderInt8,
+               c->f12.shaderFloat16, c->f13.shaderIntegerDotProduct, c->f13.computeFullSubgroups,
+               c->f12.runtimeDescriptorArray);
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
         const char *e = cfg_get("AC_FEEDBACK");

@@ -33,6 +33,7 @@
 #include "vk_exec.h"
 #include "vk_rec.h"
 #include "vk_fsr3.h"
+#include "vk_fsr4.h"
 #include "vk_xess.h"
 #include "nvn_api.h"
 #include "platform/platform.h"
@@ -211,6 +212,7 @@ static int vtable_ok(void) {
 }
 
 void vk_dlaa_init(void) {
+    vk_fsr4_init();   // its library, when the setting is fsr4 at start
     if (!vk_dlaa_wanted() || !core_load()) return;
 #ifdef _WIN32   // core_load loads nothing elsewhere
     wchar_t wdir[MAX_PATH];
@@ -335,12 +337,13 @@ VkImageView vk_dlaa_swap_view;
 uint32_t vk_dlaa_swap_w;
 VkImage vk_dlaa_swap_pic;   // the image behind vk_dlaa_swap_view (vk_hdr.c records it as the frame's scene)
 
-enum { BK_NONE, BK_DLSS, BK_XESS, BK_FSR3 };
+enum { BK_NONE, BK_DLSS, BK_XESS, BK_FSR3, BK_FSR4 };
 
 static int dl_active(void) {
     return D.backend == BK_DLSS   ? N.available && !D.failed
            : D.backend == BK_XESS ? vk_xess_available()
            : D.backend == BK_FSR3 ? vk_fsr3_available()
+           : D.backend == BK_FSR4 ? vk_fsr4_available()
                                   : 0;
 }
 
@@ -352,7 +355,11 @@ static int dl_active(void) {
 // the game's plain scaling never shows a scene at 33..67 % of the output; the menu says that the choice waits for a
 // restart. can() makes nothing: FSR 3's pipelines are made when it is picked (dl_active).
 static int can(int bk) {
-    return bk == BK_DLSS ? N.available && !D.failed : bk == BK_XESS ? vk_xess_available() : bk == BK_FSR3 ? !vk_fsr3_failed() : 0;
+    return bk == BK_DLSS   ? N.available && !D.failed
+           : bk == BK_XESS ? vk_xess_available()
+           : bk == BK_FSR3 ? !vk_fsr3_failed()
+           : bk == BK_FSR4 ? vk_fsr4_available()
+                           : 0;
 }
 
 static int chosen(void) {
@@ -360,6 +367,7 @@ static int chosen(void) {
     return !strcmp(up, "dlss") ? BK_DLSS
            : !strcmp(up, "xess") ? BK_XESS
            : !strcmp(up, "fsr3") ? BK_FSR3
+           : !strcmp(up, "fsr4") ? BK_FSR4
            : !strcmp(up, "auto") ? (can(BK_DLSS) ? BK_DLSS : BK_FSR3)
                                  : BK_NONE;
 }
@@ -789,6 +797,7 @@ static const char *backend_name(int b, int up) {
     return b == BK_DLSS   ? (up ? "DLSS" : "DLAA")
            : b == BK_XESS ? (up ? "XeSS" : "XeSS Native AA")
            : b == BK_FSR3 ? (up ? "FSR 3" : "FSR 3 Native AA")
+           : b == BK_FSR4 ? (up ? "FSR 4" : "FSR 4 Native AA")
                           : "off";
 }
 
@@ -921,6 +930,17 @@ static int resolve(VkExec *ex, const VkExecTarget *src) {
                       .jx = jx, .jy = jy, .phases = jitter_phases(w, ow), .dt_ms = dt_ms, .reset = D.reset, .hdr = hdr};
         camera_planes(&f.near_z, &f.far_z, &f.fov_y);
         if (!vk_fsr3_evaluate(cb, &f)) return 0;   // off for the rest of the run (vk_fsr3.c)
+    } else if (D.backend == BK_FSR4) {
+        Fsr4Eval f = {.color = {t->image, t->format, t->width, t->height, t->level, t->base_layer},
+                      .depth = {z->image, z->format, z->width, z->height, z->level, z->base_layer},
+                      .mv = {e->mv, VK_FORMAT_R16G16_SFLOAT, w, h, 0, 0},
+                      .out = {e->out, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh, 0, 0},
+                      .w = w, .h = h, .ow = ow, .oh = oh, .jx = jx, .jy = jy, .dt_ms = dt_ms, .reset = D.reset,
+                      .hdr = hdr};
+        camera_planes(&f.near_z, &f.far_z, &f.fov_y);
+        int ok = vk_fsr4_evaluate(cb, &f);
+        vk_exec_draw_new_cb();   // FSR 4 bound pipelines and sets of its own
+        if (!ok) return 0;        // off for the rest of the run (vk_fsr4.c)
     } else if (D.backend == BK_DLSS) {
         if (!D.params && !NGX_OK(N.alloc_params(&D.params))) return dl_fail("parameter allocation", 0), 0;
         NgxParam *p = D.params;
@@ -1199,6 +1219,7 @@ int vk_dlaa_choice_state(const char *up) {
     if (!strcmp(up, "dlss")) return !N.tried ? 1 : N.available && !D.failed ? 0 : 2;
     if (!strcmp(up, "xess")) return !vk_xess_tried() ? 1 : vk_xess_available() ? 0 : 2;
     if (!strcmp(up, "fsr3") || !strcmp(up, "auto")) return vk_fsr3_failed() && !can(BK_DLSS) ? 2 : 0;
+    if (!strcmp(up, "fsr4")) return !vk_fsr4_tried() ? 1 : vk_fsr4_available() ? 0 : 2;
     return 0;
 }
 
@@ -1295,6 +1316,7 @@ void vk_dlaa_release(void) {
         N.inited = N.available = 0;
     }
     vk_xess_release();
+    vk_fsr4_release();
     vk_fsr3_shutdown();
 }
 

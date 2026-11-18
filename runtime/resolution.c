@@ -314,6 +314,12 @@ static int beside_exe(const char *name) {
 static int upscaler_at_start(void) {
     const char *up = cfg_upscaling();
     if (!strcmp(up, "fsr3") || !strcmp(up, "auto")) return 1;
+    if (!strcmp(up, "fsr4") && cfg_get("AC_FSR4_LIB") && *cfg_get("AC_FSR4_LIB")) return 1;
+#ifdef _WIN32
+    if (!strcmp(up, "fsr4")) return beside_exe("amd_fidelityfx_loader_vk.dll");
+#else
+    if (!strcmp(up, "fsr4")) return beside_exe("amd_fidelityfx_upscaler_vk.so");
+#endif
 #ifdef _WIN32
     if (!strcmp(up, "dlss")) return beside_exe("nvngx_dlss.dll");
     if (!strcmp(up, "xess")) return beside_exe("libxess.dll");

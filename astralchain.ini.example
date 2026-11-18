@@ -252,13 +252,16 @@
 # The 3D scene's temporal upscaler, in place of the game's anti-aliasing: off (the default), auto (DLSS where it can
 # run, FSR 3 elsewhere), dlss (NVIDIA DLSS: NVIDIA RTX GPUs, with nvngx_dlss.dll from NVIDIA's DLSS SDK next to
 # astralchain.exe), xess (Intel XeSS: most GPUs of the last years, with libxess.dll next to astralchain.exe, which the
-# installer puts there, and the Microsoft Visual C++ runtime) or fsr3 (AMD FSR 3: any GPU, built in). dlss and xess are
-# Windows only. They give smoother edges and less shimmer, for some GPU time at the native mode (XeSS and FSR 3 about
+# installer puts there, and the Microsoft Visual C++ runtime), fsr3 (AMD FSR 3: any GPU, built in) or fsr4 (AMD FSR 4,
+# the machine-learning upscaler: on Windows with amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll from
+# AMD's FidelityFX SDK 2.4.0 or later next to astralchain.exe; elsewhere with amd_fidelityfx_upscaler_vk.so from
+# fsr4-vk, the community Vulkan port, on an RDNA 2 or newer Radeon with Mesa's RADV driver; neither is shipped, and
+# AC_FSR4_LIB can name the library's path instead). dlss and xess are Windows only. They give smoother edges and less shimmer, for some GPU time at the native mode (XeSS and FSR 3 about
 # 5 to 6 ms a frame at 2560x1440 on an Arc 140T); the HUD is not touched. Changes take effect at once between the
 # upscalers that came up at start: dlss and auto load NGX at start, xess libxess.dll, so choosing one later waits for a
 # restart.
 # upscaling = off
-# The upscaler's mode: native (the 3D scene at the game resolution: DLAA under DLSS, Native AA under XeSS and FSR 3),
+# The upscaler's mode: native (the 3D scene at the game resolution: DLAA under DLSS, Native AA under XeSS and FSR),
 # quality, balanced, performance or ultra_performance (the scene at about 67, 58, 50 or 33 % of the game resolution, on
 # the sizes the game takes, at least 640x360 and in handheld at most 1280x720; the upscaler brings it to the game
 # resolution and texture filtering is sharpened to match: more frames per second). Read at start. When the chosen
