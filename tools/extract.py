@@ -14,8 +14,9 @@ Steps, each skipped when its verified output already exists:
 3. RomFS of the update, merged from the base Program NCA and the update's BKTR section by hactool, verified
    through all six IVFC levels, with its file index.
 
-The base NSP is expected to be ticketless or key-area encrypted (the usual game-card dump); the update NSP
-carries a common ticket. A file whose data fails its hashes or ends early stops the extraction.
+The base game is an XCI (game card image, read from its secure partition) or an NSP, ticketless or key-area
+encrypted (the usual game-card dump); the update NSP carries a common ticket. A file whose data fails its hashes
+or ends early stops the extraction.
 
 --base, --update, --keys and --work name the files and the output directory instead of the config (the
 installer imports the functions instead). Key values are read by the tools from the keys file and never
@@ -94,9 +95,19 @@ def partition_entries(f, offset, bound, magic=b'PFS0', stride=24):
 
 
 def container_entries(f, size):
+    """('nsp' or 'xci', [(name, absolute offset, size)]): the files of an NSP, or of the secure partition of an XCI.
+
+    A game card image holds a root HFS0 (its offset at 0x130) whose secure partition carries the game's NCAs; the
+    update, normal and logo partitions are left out. Card NCAs use the key area and come with no ticket.
+    """
     if read_at(f, 0, 4) == b'PFS0':
         return 'nsp', partition_entries(f, 0, size)
-    raise ValueError('Expected an NSP (PFS0) game file; XCI is not supported')
+    require(size >= 0x138 and read_at(f, 0x100, 4) == b'HEAD', 'Expected an XCI or NSP (PFS0) game file')
+    root = struct.unpack('<Q', read_at(f, 0x130, 8))[0]
+    require(0 < root < size, 'XCI root partition out of bounds')
+    secure = [e for e in partition_entries(f, root, size - root, b'HFS0', 64) if e[0] == 'secure']
+    require(len(secure) == 1, 'Expected one XCI secure partition')
+    return 'xci', partition_entries(f, secure[0][1], secure[0][2], b'HFS0', 64)
 
 
 def load_keys(path):
@@ -622,7 +633,7 @@ def check_expected(display_version, manifest, romfs_report):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--config', type=Path, default=ROOT / 'config.local.toml')
-    parser.add_argument('--base', type=Path, help='base game NSP (default: input.base of the config)')
+    parser.add_argument('--base', type=Path, help='base game XCI or NSP (default: input.base of the config)')
     parser.add_argument('--update', type=Path, help='update NSP, 1.0.1 (default: input.update of the config)')
     parser.add_argument('--keys', type=Path, help='prod.keys (default: input.keys of the config)')
     parser.add_argument('--hactool', type=Path,

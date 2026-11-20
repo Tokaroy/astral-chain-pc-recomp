@@ -1,6 +1,6 @@
 """installer/ bookkeeping with fake steps: fresh install, resume after a failure or cancel, transient steps, update
-with a newer release, astralchain.ini, the event stream, and what a launcher uses: progress lines, --lang auto and
-recomplauncher.json. No game files, no tools; stdlib only.
+with a newer release, the game-file containers (NSP, XCI), astralchain.ini, the event stream, and what a launcher
+uses: progress lines, --lang auto and recomplauncher.json. No game files, no tools; stdlib only.
 
 Run: python tests/installer_test.py
 """
@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -416,6 +417,48 @@ class BaseGameCheckTest(unittest.TestCase):
     def test_update_slot_names_a_combined_package(self):
         records = [self.nca(0, self.BASE), self.nca(1, self.BASE), self.nca(1, self.UPDATE)]
         self.assertEqual(steps.update_misuse(records), 'check.update_combined')
+
+
+class ContainerTest(unittest.TestCase):
+    """The base game may be a game card image (XCI): its files are those of the root HFS0's secure partition."""
+
+    @staticmethod
+    def hfs0(files):
+        """An HFS0 partition holding files [(name, bytes)]; entries are 64 bytes (offset, size, name, hash fields)."""
+        names = b''.join(name.encode() + b'\0' for name, _ in files)
+        table, data, name_off = b'', b'', 0
+        for name, payload in files:
+            table += struct.pack('<QQII', len(data), len(payload), name_off, 0) + bytes(40)
+            data += payload
+            name_off += len(name) + 1
+        return b'HFS0' + struct.pack('<II', len(files), len(names)) + bytes(4) + table + names + data
+
+    def xci(self, partitions):
+        root = self.hfs0(partitions)
+        header = bytearray(0x200)
+        header[0x100:0x104] = b'HEAD'
+        header[0x130:0x138] = struct.pack('<Q', len(header))
+        return bytes(header) + root
+
+    def entries(self, image):
+        return steps.container_entries(io.BytesIO(image), len(image))
+
+    def test_xci_lists_the_secure_partition(self):
+        secure = self.hfs0([('a.nca', b'A' * 32), ('b.cnmt.nca', b'B' * 16)])
+        image = self.xci([('update', self.hfs0([('sys.nca', b'S' * 8)])), ('normal', self.hfs0([])), ('secure', secure)])
+        kind, entries = self.entries(image)
+        self.assertEqual(kind, 'xci')
+        self.assertEqual([name for name, _, _ in entries], ['a.nca', 'b.cnmt.nca'])
+        for name, offset, size in entries:
+            self.assertEqual(image[offset:offset + size], (b'A' * 32 if name == 'a.nca' else b'B' * 16))
+
+    def test_xci_without_a_secure_partition_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.entries(self.xci([('update', self.hfs0([]))]))
+
+    def test_neither_nsp_nor_xci_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.entries(bytes(0x400))
 
 
 class EventsTest(unittest.TestCase):
