@@ -214,7 +214,8 @@ class Emitter:
     """C for the functions of one module. starts is the set of every function start of the module."""
 
     def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None,
-                 v_locals=vlocals.LOCALS, v_trust=False, abi_trust=False, v_abi_trust=False, ipa=None, summarize=False, poison=False, stubs=None):
+                 v_locals=vlocals.LOCALS, v_trust=False, abi_trust=False, v_abi_trust=False, ipa=None, summarize=False, poison=False, stubs=None,
+                 stub_calls=None):
         self.mod = mod
         self.starts = starts
         self.patched = patched or {}   # {address: [(set index, [replacement words])]} (recomp/patches.py)
@@ -228,6 +229,7 @@ class Emitter:
         self.ipa = ipa               # recomp/ipa.py Tables for abi_trust (None while summarize)
         self.summarize = summarize   # function() returns the ipa.Summary instead of C
         self.stubs = stubs or {}     # {address of an import stub's br: the function it reaches} (import_stubs())
+        self.stub_calls = stub_calls or {}   # those of stubs that reach a lifted function: the br calls it directly
         self.poison = poison         # abi_trust: put a trap value in every register left out of a sync (a test build)
         self.uses_patches = False
         self.stats = Counter()
@@ -538,7 +540,17 @@ class Emitter:
                     emit(i, f'    {publish(i)}{spill}c->pc = {ins.target}; {redispatch}')
                 else:
                     event(i, ipa.TAIL, self.stubs.get(a), ipa.PLT if a in self.stubs else None)
-                    emit(i, f'    {publish(i)}{spill}c->pc = {ins.target}; {MUSTTAIL} rt_dispatch(c);')
+                    direct = ''
+                    if a in self.stub_calls:
+                        # An import stub jumps to the address in its GOT slot, which import_stubs() works out as the
+                        # loader does. When the slot holds that address the stub calls the function directly
+                        # (cpu.h rt_stub_hit); any other address (a host function the runtime bound to the name
+                        # without a HOST_OVERRIDE the generator sees) goes through rt_dispatch as before.
+                        t = self.stub_calls[a]
+                        refs.add(t)
+                        self.stats['stub_calls'] += 1
+                        direct = f'if (rt_stub_hit(c, {ins.target}, {hx(t)})) {{ {MUSTTAIL} {fname(t)}(c); }} '
+                    emit(i, f'    {publish(i)}{spill}{direct}c->pc = {ins.target}; {MUSTTAIL} rt_dispatch(c);')
             elif k == 'ret':
                 event(i, ipa.RET)
                 emit(i, f'    {spill}return;')
@@ -878,11 +890,14 @@ def main():
     ctx = mp.get_context('spawn')
     jobs, why = pick_jobs(args.jobs)
     print(f'emitting with {jobs} workers ({why})', file=sys.stderr, flush=True)
+    opts['stubs'] = import_stubs(loaded, host_symbols(ROOT / 'runtime'))
+    lifted = {a for d in info.values() for a in d['emitted']}
+    opts['stub_calls'] = {a: t for a, t in opts['stubs'].items() if t in lifted}
+    print(f'{len(opts["stubs"])} import stubs resolved, {len(opts["stub_calls"])} to a lifted function',
+          file=sys.stderr, flush=True)
     if args.abi_trust:
         # recomp/ipa.py: every function's register use, from a first pass over all of them
         t_ipa = time.perf_counter()
-        opts['stubs'] = import_stubs(loaded, host_symbols(ROOT / 'runtime'))
-        print(f'ipa: {len(opts["stubs"])} import stubs resolved', file=sys.stderr, flush=True)
         summaries = {}
         with ctx.Pool(jobs, initializer=_worker_init,
                       initargs=(paths, starts_abs, table, dict(opts, summarize=True))) as pool:
@@ -936,6 +951,7 @@ def main():
                 'jump_table_targets': stats['jump_table_targets'],
                 'all_label_fallbacks': stats['all_label_fallbacks'],
                 'br_dispatch': stats['br_dispatch'],
+                'stub_calls': stats['stub_calls'],
                 'traps': stats['traps'],
                 'patched_sites': stats['patched_sites'],
                 'local_flag_functions': stats['local_flag_functions'],
@@ -967,7 +983,8 @@ def main():
         s = manifest['stats']
         print(f'{name}: {s["emitted_functions"]} functions, {len(rs)} chunks, {s["c_bytes"] / 1e6:.0f} MB of C, '
               f'{s["jump_tables"]} jump tables, {s["all_label_fallbacks"]} all-label fallbacks, '
-              f'{s["br_dispatch"]} br via dispatch, {s["traps"]} traps ({s["unsupported"]} unsupported)',
+              f'{s["br_dispatch"]} br via dispatch ({s["stub_calls"]} import stubs call their function directly), '
+              f'{s["traps"]} traps ({s["unsupported"]} unsupported)',
               file=sys.stderr)
     print(f'total {time.perf_counter() - t0:.0f}s', file=sys.stderr)
     if errors:

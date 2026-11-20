@@ -39,6 +39,14 @@ typedef void (*GuestFn)(Cpu *);
 
 // ---- runtime services (runtime/*.c)
 void rt_dispatch(Cpu *c);                 // call function at c->pc
+// An import stub (recomp/gen.py import_stubs): its GOT slot holds `pc`, and `known` is the lifted function the
+// generator expects there, which the stub then calls directly. A pending preempt request (the first int of the thread
+// object, host.h kern_preempt_pending) sends the call through rt_dispatch, where an indirect call gives its core up
+// (dispatch.c), so a stub is the check point it was.
+static inline __attribute__((always_inline)) int rt_stub_hit(const Cpu *c, uint64_t pc, uint64_t known) {
+    return __builtin_expect(pc == known, 1)
+        && !__builtin_expect(c->thread && __atomic_load_n((const int *)c->thread, __ATOMIC_RELAXED), 0);
+}
 void rt_spin_gate(Cpu *c, uint64_t head);  // a pass of a spin wait loop (kernel.c, recomp/patches.py `spin`)
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc);
 void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) __attribute__((noreturn));
