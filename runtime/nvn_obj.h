@@ -96,7 +96,10 @@ typedef struct {
     size_t game_size;                    // TOTK: command memory the game added (accounting only; not used for storage)
     uintptr_t cmd_base;                  // TOTK: pool storage address + offset of the command memory the game added
     size_t cmd_used, ctl_used, rec_start;   // rec_start: cmd_used when the current recording began
-    size_t hw_used, last_rec, hw_start;            // TOTK: command memory the real NVN driver would have consumed (what GetCommandMemoryUsed reports; the game sizes resource heaps from it), size of the last record           // TOTK: usage reported to the game since the memory was added (main+0x711e4c submits only non-empty buffers)
+    size_t hw_used;                      // TOTK: command memory the real NVN driver would have consumed (what GetCommandMemoryUsed reports; the game sizes resource heaps from it)
+    uint32_t last_rec;                   // size of the last record
+    uint32_t ubo_owner;                  // the thread whose table holds this recording's uniform bindings, 0 for none (nvn_api_cmd.c ubo_table)
+    size_t hw_start;                     // TOTK: usage reported to the game since the memory was added (main+0x711e4c submits only non-empty buffers)
 } cmd_t;                                                                                     FITS(cmd_t, NVNcommandBuffer);
 _Static_assert(__builtin_offsetof(cmd_t, guest_flags) == 0x10, "NVN inline dirty flag");
 _Static_assert(__builtin_offsetof(cmd_t, inline_cur) == 0x20 && __builtin_offsetof(cmd_t, inline_end) == 0x28, "NVN inline fast-path fields");

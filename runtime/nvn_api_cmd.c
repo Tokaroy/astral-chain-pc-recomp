@@ -212,7 +212,7 @@ static uint8_t *cmd_alloc(cmd_t *o, uint32_t size) {
 static void hw_fix(cmd_t *o, size_t bytes) {
     o->hw_used += bytes;
     o->hw_used -= o->last_rec;
-    o->last_rec = bytes;
+    o->last_rec = (uint32_t)bytes;
 }
 
 // A zeroed payload of one record.
@@ -496,6 +496,7 @@ NVN_API(nvnCommandBufferBeginRecording) {
     cmd_t *o = cmd_of(c);
     if (o->recording) rt_log("nvn: BeginRecording on command buffer %p while it records", (void *)o);
     o->recording = 1;
+    o->ubo_owner = 0;   // what the queue holds bound when this recording runs is not known here
     o->cur = o->seg;   // the previous recording was copied at EndRecording
     o->rec_start = o->cmd_used;
     put_hdr(cmd_alloc(o, 8), OP_BEGIN, 8);
@@ -531,6 +532,7 @@ static void inline_recording(cmd_t *o, uint64_t handle, const char *what) {
     uint64_t bytes = copy_touch(handle, __atomic_load_n(&nsubmits, __ATOMIC_RELAXED), what);
     if (bytes <= 16) return;
     size_t body = (size_t)bytes - 16;
+    o->ubo_owner = 0;   // the called recording made uniform binds of its own
     cmd_reserve(o, body);
     memcpy(o->cur, (const uint8_t *)(uintptr_t)handle + 8, body);
     o->cur += body;
@@ -758,20 +760,74 @@ NVN_API(nvnCommandBufferBindVertexBuffer) {
     NVNbufferRange r = {arg_x(c, 2), arg_x(c, 3)};
     bind_vertex_buffers(cmd_of(c), (int)arg_x(c, 1), 1, &r);
 }
-// Uniform and storage buffers: one record per binding (CB_SIZE/ADDRESS 4 words + CB_BIND 1 on hardware).
+// Uniform binds that repeat the recording's current binding are not recorded. Astral Chain binds all 14 uniform slots
+// of a stage before nearly every draw: in the town with the camera turning, 54 560 bindings a frame in 3 897 calls,
+// 87% of them the range the same recording already bound at that stage and slot. Each was a 32-byte record: 1.7 of the
+// 2.6 MiB a frame's recording takes, written here, copied by EndRecording, walked by resolve_deferred at the submit
+// and again by the replay, where it also marks the bindings changed for the next draw. Without them (Ryzen Z1 Extreme,
+// that scene, A/B blocks of one run): the replay 13.9 -> 11.95 ms a frame, the frame 18.31 -> 17.92 ms, the thread that
+// records the draws 7.72 -> 7.51 ms of CPU.
+// The replay sets its binding at a uniform bind record and nowhere else, so leaving out a record that binds what the
+// recording bound last changes nothing it draws. The table of a recording's bindings belongs to the thread that
+// records it (cmd_t has no room for it): a recording another thread took over, one that started again (BeginRecording)
+// or that copied another in (CallCommands, CopyCommands: inline_recording) starts with nothing known, as does one
+// recorded while the switch is off. The command memory the game is told it used counts every bind, as on hardware.
+// AC_UBO_DEDUPE=0 records every bind as before; =ab switches with the A/B blocks (AC_AB).
+#define UBO_STAGES 6
+#define UBO_SLOTS 18   // the replay keeps 18 uniform bindings a stage (vk_exec.h VkExec.ubo)
+typedef struct {
+    const cmd_t *o;
+    uint64_t addr[UBO_STAGES][UBO_SLOTS], size[UBO_STAGES][UBO_SLOTS];
+    uint8_t known[UBO_STAGES][UBO_SLOTS];
+} UboTable;
+static _Thread_local UboTable ubo_tl;
+static _Thread_local uint32_t ubo_me;
+static uint32_t ubo_threads;
+
+// The calling thread's table of o's uniform bindings, emptied unless it already describes this recording; NULL while
+// the switch is off.
+static UboTable *ubo_table(cmd_t *o) {
+    static int mode = -1;
+    if (mode < 0) mode = rt_knob("UBO_DEDUPE", "1");
+    if (!RT_KNOB_ON(mode)) {
+        o->ubo_owner = 0;
+        return NULL;
+    }
+    if (!ubo_me) ubo_me = __atomic_add_fetch(&ubo_threads, 1, __ATOMIC_RELAXED);
+    if (o->ubo_owner != ubo_me || ubo_tl.o != o) {
+        memset(ubo_tl.known, 0, sizeof ubo_tl.known);
+        ubo_tl.o = o;
+        o->ubo_owner = ubo_me;
+    }
+    return &ubo_tl;
+}
+
+// One uniform or storage binding (CB_SIZE/ADDRESS 4 words + CB_BIND 1 on hardware): a record, unless it repeats the
+// uniform binding of t.
+static void bind_one(cmd_t *o, UboTable *t, uint32_t op, int st, int idx, uint64_t addr, uint64_t size) {
+    if (t && st >= 0 && st < UBO_STAGES && idx >= 0 && idx < UBO_SLOTS) {
+        if (t->known[st][idx] && t->addr[st][idx] == addr && t->size[st][idx] == size) {
+            o->hw_used += 20;
+            return;
+        }
+        t->known[st][idx] = 1;
+        t->addr[st][idx] = addr;
+        t->size[st][idx] = size;
+    }
+    *REC(o, op, p_bind_buf) = (p_bind_buf){st, idx, addr, size};
+    hw_fix(o, 20);
+}
 static void bind_buffers(const Cpu *c, uint32_t op) {   // (cmd, stage, first, n, const NVNbufferRange *ranges)
     cmd_t *o = cmd_of(c);
     int st = (int)arg_x(c, 1), first = (int)arg_x(c, 2), n = (int)arg_x(c, 3);
     const NVNbufferRange *rg = arg_p(c, 4);
-    for (int i = 0; i < n; i++) {
-        *REC(o, op, p_bind_buf) = (p_bind_buf){st, first + i, rg[i].address, rg[i].size};
-        hw_fix(o, 20);
-    }
+    UboTable *t = op == OP_BIND_UBO ? ubo_table(o) : NULL;
+    for (int i = 0; i < n; i++) bind_one(o, t, op, st, first + i, rg[i].address, rg[i].size);
 }
 static void bind_buffer(const Cpu *c, uint32_t op) {    // (cmd, stage, index, NVNbufferAddress address, size_t size)
     cmd_t *o = cmd_of(c);
-    *REC(o, op, p_bind_buf) = (p_bind_buf){(int)arg_x(c, 1), (int)arg_x(c, 2), arg_x(c, 3), arg_x(c, 4)};
-    hw_fix(o, 20);
+    UboTable *t = op == OP_BIND_UBO ? ubo_table(o) : NULL;
+    bind_one(o, t, op, (int)arg_x(c, 1), (int)arg_x(c, 2), arg_x(c, 3), arg_x(c, 4));
 }
 NVN_API(nvnCommandBufferBindUniformBuffer) { bind_buffer(c, OP_BIND_UBO); }
 NVN_API(nvnCommandBufferBindUniformBuffers) { bind_buffers(c, OP_BIND_UBO); }

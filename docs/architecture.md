@@ -120,6 +120,11 @@ Every guest thread is a host thread. Astral Chain assumes Horizon's scheduler: t
   that reads them, while the replay still records it. At the start of a submission's replay every uniform range it
   binds from CPU-written pools is copied, and the draws bind the copy (`vk_usnap.c`, after MacNativeGames'
   `AC_UBO_SNAPSHOT`); without it, late draws read another object's matrix.
+- Repeated uniform binds. The game binds all 14 uniform slots of a stage before nearly every draw (54,560 bindings
+  a frame in the town, 87% of them the range the recording already holds at that stage and slot). The recorder
+  leaves those out (`nvn_api_cmd.c` `ubo_table`; `AC_UBO_DEDUPE=0` records them all): they were 1.7 of the 2.6 MiB of
+  records a frame, copied at EndRecording and walked at the submit and by the replay, which sets its binding at such
+  a record and nowhere else. The command memory reported to the game counts them as before.
 - Driver data. The NVN driver keeps a per-stage constant bank (c0) that shaders read for things like point size, dispatch size and base instance. The back end fills it the way the driver does.
 - Shaders: the Ryujinx translator 1.3.2 with MacNativeGames' patches and ours (`tools/xlate/patches/`), built with .NET 10 NativeAOT as `ac_xlate.exe` and run as a separate process. Its SPIR-V goes to Vulkan directly. `tools/prepare_shaders.py` and `astralchain.exe --prepare-shaders` translate and compile the variants of MacNativeGames' shared list ahead of play (29,587 for 1.4.3); the rest are translated on first use and cached on disk.
 - Pipelines: `VK_EXT_graphics_pipeline_library` where the driver has it. Shader stages are compiled ahead into libraries; a draw that meets a new state links them at once (fast link), and an optimised pipeline replaces the linked one when a background thread finishes it. Pipeline keys seen in play are saved and built at boot. A draw whose pipeline is not ready is skipped when one of its pass's targets was rendered in the previous frame, and waits otherwise, so one-shot passes are never lost; a full-screen draw is skipped as well rather than waiting (`AC_PIPE_SKIP`); the stage libraries a waiting draw needs are built on idle workers in parallel (`AC_PIPE_WAIT`). Without the extension, a missing pipeline is built on a worker and the draw waits or is skipped by the same rule.
