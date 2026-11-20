@@ -34,7 +34,14 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
 - Rewritten for Astral Chain scale:
   - generator runs in parallel processes, with bounded memory per worker;
   - jump tables resolved by our own symbolic pass instead of Unicorn, which keeps GPL code out of the shipped generator;
-  - `LDXP`/`STXP` (128-bit exclusive pairs) supported;
+  - `LDXP`/`STXP` (128-bit exclusive pairs) supported. The exclusive monitor is a compare-and-swap against the value
+    the load exclusive read (`runtime/cpu.h`): it does not see a write that puts the same value back (X -> Y -> X),
+    which fails the store on hardware. That only matters to a window that reads memory or calls between the load and
+    the store, as a hand-written lock-free pop does; one that computes from registers alone gets from a successful
+    compare-and-swap what hardware gives when the thread runs after the other writers. `tests/excl_windows.py`
+    checks every window of 1.0.1: main 2290 and sdk 841, none reads memory or calls, 7 instructions at most
+    (2026-11-20). dynarmic also clears the other cores' reservations on a store exclusive, under a global lock; it is
+    not needed here, and would cost a lock on every store exclusive;
   - no 64 MB limit on `main`; `subsdk*` loaded;
   - NZCV and the general registers of each function kept in C locals instead of the `Cpu` (`recomp/flags.py`,
     `recomp/regs.py`), X18 excepted. A register analysis of every lifted function at once (`recomp/ipa.py`) tells what
