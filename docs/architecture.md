@@ -217,25 +217,35 @@ Every guest thread is a host thread. Astral Chain assumes Horizon's scheduler: t
   (Windows with "Use HDR" off, a compositor without colour management) the swapchain stays SDR and the tonemap writes
   the game's own result. `AC_SHOTS` reads the window texture, so its pictures clip highlights in HDR.
 - Temporal upscaling (`vk_dlaa.c`, off by default): `upscaling` puts NVIDIA DLSS (`dlss`, through the driver's NGX core
-  loaded at run time, Windows only), Intel XeSS (`xess`, `vk_xess.c`, `libxess.dll` loaded at run time, Windows only) or
+  loaded at run time, Windows only), Intel XeSS (`xess`, `vk_xess.c`, `libxess.dll` loaded at run time, Windows only),
   AMD FSR 3 (`fsr3`, `vk_fsr3.c`, every OS; `auto` is DLSS where it can run, else FSR 3) or AMD FSR 4 (`fsr4`,
   `vk_fsr4.c`, through AMD's FSR API, `ffxCreateContext` / `ffxDispatch`, loaded at run time: AMD's signed
   `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` of the FSR SDK 2.4.0 on Windows, pinned by
   `tools/fsr4_sdk.py` and shipped in the release's `bin/`; an `amd_fidelityfx_upscaler_vk.so` the player supplies
   elsewhere; the menu offers it only on an AMD GPU with `VK_KHR_ray_query`, i.e. RDNA 2 or newer, which is what AMD's
-  FSR 4.1 supports; the API's structures are declared in `vk_fsr4.c`, no SDK header is compiled in) in place of the game's SMAA
-  (`anti_aliasing = smaa | off`, for when none runs), in the mode `upscaling_quality` gives (`native`: DLAA, XeSS or FSR
-  3 Native AA at the scene's own size; `quality` ... `ultra_performance`: a smaller scene, below); no SDK header or
-  code of NVIDIA's
-  or Intel's is compiled in. FSR 3's passes are AMD's GLSL, unmodified and not in the repository: `tools/ffx_sdk.py`
+  FSR 4.1 supports; the API's structures are declared in `vk_fsr4.c`, no SDK header is compiled in) in place of the
+  game's SMAA (`anti_aliasing = smaa | off`, for when none runs), in the mode `upscaling_quality` gives (`native`:
+  DLAA, XeSS or FSR Native AA at the scene's own size; `quality` ... `ultra_performance`: a smaller scene, below); no
+  SDK header or code of NVIDIA's or Intel's is compiled in. FSR 3's passes are AMD's GLSL, unmodified and not in the
+  repository: `tools/ffx_sdk.py`
   fetches the pinned files of the FidelityFX SDK (commit and per-file SHA-256) into `toolchain/ffx-sdk/` and compiles
   them into `fsr3_spv.h` in the build directory, and `vk_fsr3.c` is our own host for them (internal images, constant
   blocks, the seven passes in AMD's order). FSR 4 takes the same inputs as FSR 3; its library reads the colour, depth
   and motion vectors in SHADER_READ_ONLY_OPTIMAL (the API's COMPUTE_READ state), so `vk_fsr4.c` moves them out of
-  GENERAL around the dispatch and back, and passes a 1x1 R32F exposure image holding 1 (some libraries refuse a
-  dispatch without one). With `upscaling = fsr4` at start the device also enables `VK_EXT_descriptor_buffer` and
-  `VK_KHR_compute_shader_derivatives` when the GPU has them, which FSR 4's shaders can use. Astral Chain renders forward: a depth-only prepass writes the scene
-  depth (D32F_S8), the opaque draws and the transparents go into an R11G11B10F light target with it (two images,
+  GENERAL around the dispatch and back (the recorder thread makes the barrier before the library records into the
+  command buffer itself, as for XeSS), and passes a 1x1 R32F exposure image holding 1 (some libraries refuse a
+  dispatch without one). AMD's library is also given the API version, which its documentation requires since SDK 2.1,
+  the stencil usage of the D32F_S8 depth (its back end otherwise makes a D32F view of it, which is not valid) and, for
+  the tonemapped composite, which is sRGB-encoded, the non-linear colour flags. AMD's loader makes its newest
+  upscaler that takes the GPU, FSR 3.1 where FSR 4 does not run (provider 3.1.6 on an Arc 140T), without an error:
+  `vk_fsr4.c` asks the context for its version and, when it is not FSR 4, destroys it and turns FSR 4 off for the
+  run, so the menu says it cannot run here and FSR 3 upscales a reduced scene (`AC_FSR4_ANY_VERSION=1`, a test
+  switch, keeps the context). One context is kept per scene size, output size and colour kind, four at most (AMD
+  gives a working set of 81 MB at 1920x1080 and 318 MB at 3840x2160): the least recently used goes for a new one and
+  all go after 600 presents without FSR 4, each destroyed once no frame in flight uses it. With `upscaling = fsr4` at
+  start the device also enables `VK_KHR_compute_shader_derivatives`, which the shaders of AMD's library declare, and
+  off Windows `VK_EXT_descriptor_buffer`, when the GPU has them. Astral Chain renders forward: a depth-only prepass
+  writes the scene depth (D32F_S8), the opaque draws and the transparents go into an R11G11B10F light target with it (two images,
   alternating per frame), the bloom chain reads it at half size and down, a composite tonemaps, SMAA anti-aliases and
   the HUD is drawn over the result. The AA arms on the first light-target pass after a prepass and runs, in place on
   the light target, at the first pass a quarter as wide (the bloom's third level), so the bloom, the composite and the

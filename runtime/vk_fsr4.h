@@ -10,7 +10,8 @@
 int vk_fsr4_wanted(void);      // the setting is fsr4 at start
 int vk_fsr4_tried(void);       // the library was looked for in this run (it was chosen at start)
 void vk_fsr4_init(void);       // vk_dlaa_init, the device up: loads the library when the setting is fsr4
-int vk_fsr4_available(void);   // loaded and not failed in this run
+int vk_fsr4_available(void);   // loaded and not failed in this run (a library that made another upscaler than FSR 4
+                               // for this GPU has failed)
 int vk_fsr4_offered(void);     // the menu lists FSR 4: an AMD RDNA 2 or newer GPU, the library there (after init)
 
 typedef struct {
@@ -35,4 +36,8 @@ typedef struct {
 // Records FSR 4 into cb (the replay's command buffer, no render pass open; vk_dlaa.c drains the recorder first, as for
 // XeSS; every image is in GENERAL before and after). 0: FSR 4 failed and is off for the rest of the run.
 int vk_fsr4_evaluate(VkCommandBuffer cb, const Fsr4Eval *e);
+// vk_dlaa_frame, at each present on the replay thread: sweep destroys the contexts that went once no frame in flight
+// uses them; trim, when FSR 4 has not run for a while, has every context go (the next evaluation makes its own again).
+void vk_fsr4_sweep(void);
+void vk_fsr4_trim(void);
 void vk_fsr4_release(void);   // vk_dlaa_release, the device idle: every context goes

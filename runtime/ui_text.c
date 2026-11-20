@@ -128,9 +128,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_UPSCALING_DESC] = "A temporal upscaler in place of the game's anti-aliasing: smoother edges and less "
                                "shimmer, and with a mode below Native more frames per second. NVIDIA DLSS needs an NVIDIA "
                                "RTX GPU and nvngx_dlss.dll next to astralchain.exe, Intel XeSS a recent GPU and "
-                               "libxess.dll next to astralchain.exe; AMD FSR 3 runs on any GPU. Automatic takes DLSS "
-                               "where it can run and FSR 3 elsewhere. DLSS and XeSS chosen here take effect after a "
-                               "restart. The HUD is not touched.",
+                               "libxess.dll next to astralchain.exe; AMD FSR 3 runs on any GPU, AMD FSR 4 on a Radeon "
+                               "RX 6000 or newer. Automatic takes DLSS where it can run and FSR 3 elsewhere. DLSS, XeSS "
+                               "and FSR 4 chosen here take effect after a restart. The HUD is not touched.",
     [UI_MENU_UPSCALING_DESC_OTHER] = "A temporal upscaler in place of the game's anti-aliasing: smoother edges and less "
                                      "shimmer, and with a mode below Native more frames per second. AMD FSR 3 runs on "
                                      "any GPU; Automatic is FSR 3 here (NVIDIA DLSS and Intel XeSS are Windows only). "
@@ -536,9 +536,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_UPSCALING_DESC] = "Временной апскейлер вместо сглаживания игры: ровнее края и меньше мерцания, а в режиме "
                                "ниже «Родного» — больше кадров в секунду. NVIDIA DLSS нужна видеокарта NVIDIA RTX и "
                                "nvngx_dlss.dll рядом с astralchain.exe, Intel XeSS — современная видеокарта и libxess.dll "
-                               "рядом с astralchain.exe; AMD FSR 3 работает на любой видеокарте. «Автоматически» берёт "
-                               "DLSS, где он может работать, иначе FSR 3. DLSS и XeSS, выбранные здесь, действуют после "
-                               "перезапуска. Интерфейс не затрагивается.",
+                               "рядом с astralchain.exe; AMD FSR 3 работает на любой видеокарте, AMD FSR 4 — на Radeon "
+                               "RX 6000 и новее. «Автоматически» берёт DLSS, где он может работать, иначе FSR 3. DLSS, "
+                               "XeSS и FSR 4, выбранные здесь, действуют после перезапуска. Интерфейс не затрагивается.",
     [UI_MENU_UPSCALING_DESC_OTHER] = "Временной апскейлер вместо сглаживания игры: ровнее края и меньше мерцания, а в "
                                      "режиме ниже «Родного» — больше кадров в секунду. AMD FSR 3 работает на любой "
                                      "видеокарте; «Автоматически» здесь — FSR 3 (NVIDIA DLSS и Intel XeSS — только в "
@@ -1222,8 +1222,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                "cintilação e, com um modo abaixo de Nativo, mais quadros por segundo. NVIDIA DLSS precisa "
                                "de uma placa NVIDIA RTX e do nvngx_dlss.dll ao lado do astralchain.exe, Intel XeSS de uma "
                                "placa recente e do libxess.dll ao lado do astralchain.exe; AMD FSR 3 roda em qualquer "
-                               "placa. Automático usa o DLSS onde ele pode rodar e o FSR 3 nos outros casos. DLSS e XeSS "
-                               "escolhidos aqui valem após reiniciar. O HUD não é afetado.",
+                               "placa, AMD FSR 4 em uma Radeon RX 6000 ou mais recente. Automático usa o DLSS onde ele "
+                               "pode rodar e o FSR 3 nos outros casos. DLSS, XeSS e FSR 4 escolhidos aqui valem após "
+                               "reiniciar. O HUD não é afetado.",
     [UI_MENU_UPSCALING_DESC_OTHER] = "Um upscaler temporal no lugar do antisserrilhado do jogo: bordas mais suaves e menos "
                                      "cintilação e, com um modo abaixo de Nativo, mais quadros por segundo. AMD FSR 3 roda "
                                      "em qualquer placa; Automático é o FSR 3 aqui (NVIDIA DLSS e Intel XeSS são somente "
@@ -1760,8 +1761,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_UPSCALING] = "超分辨率",
     [UI_MENU_UPSCALING_DESC] = "以时间性超分辨率取代游戏的抗锯齿：边缘更平滑、闪烁更少；选择低于“原生”的模式还能提高帧率。"
                                "NVIDIA DLSS 需要 NVIDIA RTX 显卡，并将 nvngx_dlss.dll 放在 astralchain.exe 旁；Intel XeSS "
-                               "需要较新的显卡，并将 libxess.dll 放在 astralchain.exe 旁；AMD FSR 3 可在任何显卡上运行。"
-                               "“自动”在可运行时使用 DLSS，否则使用 FSR 3。在此选择的 DLSS 和 XeSS 重启后生效。HUD 不受影响。",
+                               "需要较新的显卡，并将 libxess.dll 放在 astralchain.exe 旁；AMD FSR 3 可在任何显卡上运行，"
+                               "AMD FSR 4 需要 Radeon RX 6000 或更新的显卡。“自动”在可运行时使用 DLSS，否则使用 FSR 3。"
+                               "在此选择的 DLSS、XeSS 和 FSR 4 重启后生效。HUD 不受影响。",
     [UI_MENU_UPSCALING_DESC_OTHER] = "以时间性超分辨率取代游戏的抗锯齿：边缘更平滑、闪烁更少；选择低于“原生”的模式还能提高"
                                      "帧率。AMD FSR 3 可在任何显卡上运行；此处“自动”即 FSR 3（NVIDIA DLSS 和 Intel XeSS "
                                      "仅限 Windows）。HUD 不受影响。",

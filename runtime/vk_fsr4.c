@@ -1,6 +1,7 @@
 // AMD FSR 4: AMD FSR Upscaling 4 (the ML upscaler) as the scene's temporal upscaler, behind AC_UPSCALING=fsr4
 // (astralchain.ini upscaling = fsr4), through AMD's FSR API: ffxCreateContext with an upscale description chained to the
-// Vulkan back end's, ffxDispatch with the frame's resources, ffxDestroyContext at exit.
+// Vulkan back end's, ffxDispatch with the frame's resources, ffxDestroyContext once no frame in flight uses the
+// context.
 //
 // The library is loaded at run time from the folder of the executable:
 // - Windows: amd_fidelityfx_loader_vk.dll, which finds amd_fidelityfx_upscaler_vk.dll next to it: AMD's signed DLLs of
@@ -20,9 +21,28 @@
 // depth near 0 to far 1 (not inverted, not infinite), linear scene light with auto exposure, or the tonemapped
 // composite with an exposure of 1.
 //
-// Threads: the contexts are made and dispatched on the replay thread, and destroyed at shutdown once the device is idle.
-// One context per scene size, output size and colour kind (at most CTX_MAX: handheld and docked differ); none is
-// destroyed before exit, since one may still be in use by a frame in flight.
+// What AMD's library (the Windows DLLs) is given beyond that, from the SDK's documentation
+// (Kits/FidelityFX/docs/techniques/super-resolution-ml.md) and its Vulkan back end (backend/vk/ffx_vk.cpp, MIT, read for
+// what it does with a resource description):
+// - the API version (ffxCreateContextDescUpscaleVersion), which the documentation requires since SDK 2.1;
+// - the non-linear colour flag, and sRGB at the dispatch, when the colour is the tonemapped composite, which is
+//   sRGB-encoded (vk_hdr.c): FSR 4 expects linear colour otherwise;
+// - the stencil usage beside the depth usage on a depth image with stencil: the back end makes its view in the format
+//   the usage gives, and without it a D32_SFLOAT view of the game's D32_SFLOAT_S8_UINT depth, which is not valid (the
+//   validation layer reported it at every frame);
+// - and the context it made is checked. The loader makes its newest upscaler that takes the GPU, so on a GPU FSR 4
+//   does not run on it makes FSR 3.1 without an error (an Arc 140T: provider 3.1.6, under the name FSR 4 in the menu
+//   and the log). A context that is not FSR 4 is destroyed and FSR 4 is off for the run: the menu says it cannot run
+//   here and vk_dlaa.c has FSR 3 upscale a reduced scene. AC_FSR4_ANY_VERSION=1 (test) keeps such a context, to
+//   exercise this file on another GPU.
+// A library elsewhere than Windows gets none of these four (AMD_LIB): that path is as it was until it is worked on.
+//
+// Threads: the contexts are made and dispatched on the replay thread. One context per scene size, output size and colour
+// kind, at most CTX_MAX (handheld and docked differ, so do HDR output on and off and each game resolution chosen in the
+// menu): the least recently used goes for a new one, and all go once FSR 4 has not run for a while (vk_fsr4_trim; AMD
+// gives a working set of 81 MB at 1920x1080 and 318 MB at 3840x2160). ffxDestroyContext does not wait for the GPU and
+// a frame in flight may still use the context, so a context that goes is destroyed once the timeline has passed the
+// submission being recorded when it went (vk_fsr4_sweep, at each present), as vk_dlaa.c does for DLSS's features.
 #include "vk_fsr4.h"
 
 #include <stdbool.h>
@@ -52,11 +72,15 @@ typedef void (*FfxMessageFn)(uint32_t type, const wchar_t *message);
 #define FFX_TYPE_BACKEND_VK ((FfxType)(FFX_BACKEND_VK | 0x03))
 #define FFX_TYPE_BACKEND_VK_OLD ((FfxType)0x3)   // FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_DEPRECATED
 #define FFX_TYPE_QUERY_PROVIDER_VERSION ((FfxType)6)
+#define FFX_TYPE_CREATE_UPSCALE_VERSION ((FfxType)(FFX_EFFECT_UPSCALE | 0x0b))
+#define FFX_UPSCALER_VERSION ((4u << 22) | (1u << 12) | 2u)   // FFX_UPSCALER_VERSION of SDK 2.4.0: 4.1.2
 
 enum {   // FfxApiCreateContextUpscaleFlags
     FFX_UP_HDR = 1 << 0,
     FFX_UP_AUTO_EXPOSURE = 1 << 5,
+    FFX_UP_NON_LINEAR = 1 << 8,
 };
+enum { FFX_DISPATCH_NON_LINEAR_SRGB = 1 << 1 };   // FfxApiDispatchFsrUpscaleFlags
 enum {   // FfxApiSurfaceFormat (the ones used here)
     FFX_FMT_UNKNOWN = 0,
     FFX_FMT_R32G32B32A32_FLOAT = 3,
@@ -73,7 +97,12 @@ enum {   // FfxApiSurfaceFormat (the ones used here)
     FFX_FMT_R32_FLOAT = 28,
 };
 enum { FFX_RES_TEXTURE2D = 2 };
-enum { FFX_USAGE_READ_ONLY = 0, FFX_USAGE_UAV = 1 << 1, FFX_USAGE_DEPTHTARGET = 1 << 2 };
+enum {
+    FFX_USAGE_READ_ONLY = 0,
+    FFX_USAGE_UAV = 1 << 1,
+    FFX_USAGE_DEPTHTARGET = 1 << 2,
+    FFX_USAGE_STENCILTARGET = 1 << 5,
+};
 enum { FFX_STATE_UNORDERED_ACCESS = 1 << 1, FFX_STATE_COMPUTE_READ = 1 << 2 };   // GENERAL, SHADER_READ_ONLY_OPTIMAL
 
 typedef struct {
@@ -93,6 +122,10 @@ typedef struct {
     FfxDim max_render, max_upscale;
     FfxMessageFn message;
 } FfxCreateUpscale;
+typedef struct {
+    FfxHeader header;
+    uint32_t version;
+} FfxCreateUpscaleVersion;
 typedef struct {
     FfxHeader header;
     VkDevice device;
@@ -119,6 +152,7 @@ typedef struct {
 _Static_assert(sizeof(FfxResourceDesc) == 32, "FfxApiResourceDescription layout");
 _Static_assert(sizeof(FfxResource) == 48, "FfxApiResource layout");
 _Static_assert(sizeof(FfxCreateUpscale) == 48, "ffxCreateContextDescUpscale layout");
+_Static_assert(sizeof(FfxCreateUpscaleVersion) == 24, "ffxCreateContextDescUpscaleVersion layout");
 _Static_assert(sizeof(FfxBackendVk) == 40, "ffxCreateBackendVKDesc layout");
 // header, command list, 7 resources, jitter and scale, two sizes, sharpen (padded), 3 floats, reset (padded), 4 floats,
 // flags
@@ -131,6 +165,14 @@ typedef FfxReturn (*PFN_Query)(FfxContext *, FfxHeader *);
 typedef FfxReturn (*PFN_Dispatch)(FfxContext *, const FfxHeader *);
 
 #define CTX_MAX 4
+#define DEAD_MAX 8
+
+// AMD's own library (Windows), as opposed to another one with the same entry points: see the header.
+#ifdef _WIN32
+#define AMD_LIB 1
+#else
+#define AMD_LIB 0
+#endif
 
 static struct {
     void *lib;
@@ -144,8 +186,13 @@ static struct {
     struct {
         FfxContext ctx;
         uint32_t w, h, ow, oh, flags;
+        uint64_t used;   // F.clock when it was last asked for
     } ctx[CTX_MAX];
-    uint64_t evals;
+    struct {
+        FfxContext ctx;
+        uint64_t after;   // the timeline value that must be done before it is destroyed
+    } dead[DEAD_MAX];
+    uint64_t clock, evals;
     VkImage exposure;   // 1x1 R32F holding 1: a Linux library wants an exposure image even for the tonemapped composite
     VmaAllocation exposure_mem;
 } F;
@@ -268,7 +315,8 @@ static uint32_t surface_format(VkFormat f) {
     }
 }
 
-// The inputs are read as sampled images (COMPUTE_READ, which a Linux library insists on), the output written as storage.
+// The inputs are read as sampled images (COMPUTE_READ: AMD's documentation asks for them in SHADER_READ_ONLY_OPTIMAL, and
+// a Linux library insists on it), the output written as storage.
 static int resource(FfxResource *r, const Fsr4Image *im, uint32_t usage, uint32_t state, const char *what) {
     static int warned;
     if (im->level || im->layer) {
@@ -336,6 +384,13 @@ static VkImageAspectFlags aspect(VkFormat f) {
     }
 }
 
+// The depth's usage: AMD's back end makes its view of the image in the depth format the usage and the surface format
+// give together (D32_SFLOAT_S8_UINT for R32_FLOAT with depth and stencil, D32_SFLOAT with depth alone), so an image
+// with stencil says so, as AMD's ffxApiGetImageResourceDescriptionVK does.
+static uint32_t depth_usage(VkFormat f) {
+    return FFX_USAGE_DEPTHTARGET | (AMD_LIB && aspect(f) & VK_IMAGE_ASPECT_STENCIL_BIT ? FFX_USAGE_STENCILTARGET : 0);
+}
+
 // The inputs live in GENERAL; FSR 4 reads them in SHADER_READ_ONLY_OPTIMAL (their COMPUTE_READ state), so they move
 // there for the dispatch and back after it. to_read 0: back to GENERAL.
 static void inputs_layout(VkCommandBuffer cb, const Fsr4Eval *e, int to_read) {
@@ -359,18 +414,62 @@ static void inputs_layout(VkCommandBuffer cb, const Fsr4Eval *e, int to_read) {
     vkCmdPipelineBarrier2(cb, &di);
 }
 
-// The context for this scene size, output size and colour kind, made at its first use.
+// Contexts that went while submissions that dispatch them may still be on the GPU (the header's last paragraph).
+static void sweep(int all) {
+    uint64_t done = vk_sync_fence_done();
+    for (int i = 0; i < DEAD_MAX; i++)
+        if (F.dead[i].ctx && (all || F.dead[i].after <= done)) F.destroy(&F.dead[i].ctx, NULL), F.dead[i].ctx = NULL;
+}
+
+void vk_fsr4_sweep(void) {
+    if (F.loaded) sweep(0);
+}
+
+static void retire(FfxContext ctx) {
+    for (int i = 0; i < DEAD_MAX; i++)
+        if (!F.dead[i].ctx) {
+            F.dead[i].ctx = ctx, F.dead[i].after = vk_sync_issued() + 1;   // the submission being recorded included
+            return;
+        }
+    // no room (DEAD_MAX contexts gone within a few frames): the slow way, wait for the GPU and destroy everything
+    vk_queue_lock();   // vkDeviceWaitIdle needs every queue externally synchronised; other threads submit too
+    vkDeviceWaitIdle(vk_ctx()->device);
+    vk_queue_unlock();
+    sweep(1);
+    F.destroy(&ctx, NULL);
+}
+
+void vk_fsr4_trim(void) {
+    int n = 0;
+    for (int i = 0; i < CTX_MAX; i++)
+        if (F.ctx[i].ctx) retire(F.ctx[i].ctx), F.ctx[i].ctx = NULL, n++;
+    if (n) rt_log("fsr4: %d context%s released", n, n == 1 ? "" : "s");
+}
+
+// The context for this scene size, output size and colour kind, made at its first use; with every slot taken, in the
+// place of the least recently used one.
 static FfxContext *context(uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, uint32_t flags) {
-    int free_slot = -1;
+    int free_slot = -1, lru = 0;
+    F.clock++;
     for (int i = 0; i < CTX_MAX; i++) {
         if (F.ctx[i].ctx && F.ctx[i].w == w && F.ctx[i].h == h && F.ctx[i].ow == ow && F.ctx[i].oh == oh &&
-            F.ctx[i].flags == flags)
+            F.ctx[i].flags == flags) {
+            F.ctx[i].used = F.clock;
             return &F.ctx[i].ctx;
+        }
         if (!F.ctx[i].ctx && free_slot < 0) free_slot = i;
+        if (F.ctx[i].used < F.ctx[lru].used) lru = i;
     }
-    if (free_slot < 0) return fail("context (no free slot for another size)", 0), NULL;
+    if (free_slot < 0) {
+        rt_log("fsr4: the context %ux%u to %ux%u goes for another size", F.ctx[lru].w, F.ctx[lru].h, F.ctx[lru].ow,
+               F.ctx[lru].oh);
+        retire(F.ctx[lru].ctx), F.ctx[lru].ctx = NULL;
+        free_slot = lru;
+    }
     const VkCtx *c = vk_ctx();
-    FfxBackendVk be = {.header = {F.old_backend ? FFX_TYPE_BACKEND_VK_OLD : FFX_TYPE_BACKEND_VK, NULL},
+    FfxCreateUpscaleVersion ver = {.header = {FFX_TYPE_CREATE_UPSCALE_VERSION, NULL}, .version = FFX_UPSCALER_VERSION};
+    FfxBackendVk be = {.header = {F.old_backend ? FFX_TYPE_BACKEND_VK_OLD : FFX_TYPE_BACKEND_VK,
+                                  AMD_LIB ? &ver.header : NULL},
                        .device = c->device, .phys = c->phys, .get_device_proc = vkGetDeviceProcAddr};
     FfxCreateUpscale cu = {.header = {FFX_TYPE_CREATE_UPSCALE, &be.header}, .flags = flags,
                            .max_render = {w, h}, .max_upscale = {ow, oh}, .message = on_message};
@@ -384,12 +483,25 @@ static FfxContext *context(uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, uin
         if (r == 0) rt_log("fsr4: the library takes the deprecated Vulkan back end description");
     }
     if (r != 0 || !ctx) return fail("context creation", r), NULL;
-    F.ctx[free_slot].ctx = ctx;
-    F.ctx[free_slot].w = w, F.ctx[free_slot].h = h, F.ctx[free_slot].ow = ow, F.ctx[free_slot].oh = oh;
-    F.ctx[free_slot].flags = flags;
     const char *name = "?";
     FfxQueryProviderVersion q = {.header = {FFX_TYPE_QUERY_PROVIDER_VERSION, NULL}};
-    if (F.query && F.query(&F.ctx[free_slot].ctx, &q.header) == 0 && q.version_name) name = q.version_name;
+    if (F.query && F.query(&ctx, &q.header) == 0 && q.version_name) name = q.version_name;
+    // AMD's loader made its newest upscaler that takes this GPU: FSR 3.1 where FSR 4 does not run (the header)
+    static int any = -1;
+    if (any < 0) any = rt_knob("FSR4_ANY_VERSION", "0");   // AC_FSR4_ANY_VERSION=1: keep it (test)
+    if (AMD_LIB && name[0] >= '0' && name[0] <= '9' && atoi(name) < 4) {
+        if (!any) {
+            F.destroy(&ctx, NULL);   // nothing was dispatched with it
+            rt_log("fsr4: the library made its FSR %s upscaler for this GPU, not FSR 4: FSR 4 off for this run", name);
+            F.failed = 1;
+            return NULL;
+        }
+        static int said;
+        if (!said++) rt_log("fsr4: the library made its FSR %s upscaler, kept for AC_FSR4_ANY_VERSION", name);
+    }
+    F.ctx[free_slot].ctx = ctx;
+    F.ctx[free_slot].w = w, F.ctx[free_slot].h = h, F.ctx[free_slot].ow = ow, F.ctx[free_slot].oh = oh;
+    F.ctx[free_slot].flags = flags, F.ctx[free_slot].used = F.clock;
     rt_log("fsr4: context %ux%u to %ux%u, %s colour, provider %s, made in %.1f ms", w, h, ow, oh,
            flags & FFX_UP_HDR ? "linear" : "LDR", name, (plat_now_ns() - t0) / 1e6);
     return &F.ctx[free_slot].ctx;
@@ -400,14 +512,16 @@ int vk_fsr4_evaluate(VkCommandBuffer cb, const Fsr4Eval *e) {
     uint32_t ow = e->ow ? e->ow : e->w, oh = e->oh ? e->oh : e->h;
     FfxDispatchUpscale d = {.header = {FFX_TYPE_DISPATCH_UPSCALE, NULL}, .command_list = (void *)cb};
     if (!resource(&d.color, &e->color, FFX_USAGE_READ_ONLY, FFX_STATE_COMPUTE_READ, "scene colour") ||
-        !resource(&d.depth, &e->depth, FFX_USAGE_DEPTHTARGET, FFX_STATE_COMPUTE_READ, "scene depth") ||
+        !resource(&d.depth, &e->depth, depth_usage(e->depth.format), FFX_STATE_COMPUTE_READ, "scene depth") ||
         !resource(&d.motion, &e->mv, FFX_USAGE_READ_ONLY, FFX_STATE_COMPUTE_READ, "motion vectors") ||
         !resource(&d.output, &e->out, FFX_USAGE_UAV, FFX_STATE_UNORDERED_ACCESS, "output"))
         return fail("resource description", 0);
     if (!exposure_image(cb)) return fail("exposure image", 0);
     Fsr4Image ex = {.image = F.exposure, .format = VK_FORMAT_R32_SFLOAT, .width = 1, .height = 1};
     resource(&d.exposure, &ex, FFX_USAGE_READ_ONLY, FFX_STATE_COMPUTE_READ, "exposure");
-    uint32_t flags = e->hdr ? FFX_UP_HDR | FFX_UP_AUTO_EXPOSURE : 0;
+    // linear scene light, or the tonemapped composite, which is sRGB-encoded (the header)
+    uint32_t flags = e->hdr ? FFX_UP_HDR | FFX_UP_AUTO_EXPOSURE : AMD_LIB ? FFX_UP_NON_LINEAR : 0;
+    if (flags & FFX_UP_NON_LINEAR) d.flags = FFX_DISPATCH_NON_LINEAR_SRGB;
     FfxContext *ctx = context(e->w, e->h, ow, oh, flags);
     if (!ctx) return 0;
     d.jitter = (FfxXY){e->jx, e->jy};
@@ -420,7 +534,12 @@ int vk_fsr4_evaluate(VkCommandBuffer cb, const Fsr4Eval *e) {
     d.reset = e->reset != 0;
     d.near_z = e->near_z, d.far_z = e->far_z, d.fov_y = e->fov_y;
     d.meters_per_unit = 1.0f;
+    // The barriers here (and the exposure image's clear) go through the recorder thread (vk_rec.h) like the replay's own
+    // commands; the library records into cb itself, so the recorder must have made them first, as for XeSS
+    // (vk_xess.c). Without the wait both threads recorded into cb at once, which the validation layer reported on an
+    // Arc 140T (the recorder thread is off on AMD GPUs). The barrier after is queued behind the library's commands.
     inputs_layout(cb, e, 1);
+    rec_drain();
     FfxReturn r = F.dispatch(ctx, &d.header);
     inputs_layout(cb, e, 0);   // also after a refusal: the images stay in GENERAL for FSR 3
     if (r != 0) return fail("dispatch", r);
@@ -429,6 +548,7 @@ int vk_fsr4_evaluate(VkCommandBuffer cb, const Fsr4Eval *e) {
 }
 
 void vk_fsr4_release(void) {
+    if (F.loaded) sweep(1);
     for (int i = 0; i < CTX_MAX; i++)
         if (F.ctx[i].ctx) F.destroy(&F.ctx[i].ctx, NULL), F.ctx[i].ctx = NULL;
     if (F.exposure) vmaDestroyImage(vk_ctx()->vma, F.exposure, F.exposure_mem), F.exposure = VK_NULL_HANDLE;

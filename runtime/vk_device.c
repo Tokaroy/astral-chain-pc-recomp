@@ -284,16 +284,23 @@ static int create_device(void) {
     // XeSS's, when its whole list and every feature it asks for are there; its one non-core feature structure is chained
     if (vk_xess_device_exts(g_vk.instance, g_vk.phys, ep, ne, ext, &n_ext, 72))
         CHAIN(mut, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT);
-    // FSR 4 (vk_fsr4.c), only with upscaling = fsr4: AMD's shaders, run by a Linux library on RADV, bind through descriptor
-    // buffers and take derivatives in compute shaders; the rest they use (8/16-bit arithmetic, integer dot products,
-    // subgroup size control, buffer device addresses) is Vulkan 1.1-1.3 core and enabled with it below.
+    // FSR 4 (vk_fsr4.c), only with upscaling = fsr4: AMD's shaders take derivatives in compute shaders, in AMD's own
+    // library (Windows) too: without the extension the validation layer reports SPV_KHR_compute_shader_derivatives and
+    // ComputeDerivativeGroupLinearKHR at vkCreateShaderModule when the library makes its context (an Arc 140T, its FSR
+    // 3.1.6 upscaler). Run by a Linux library on RADV they also bind through descriptor buffers, which AMD's library
+    // does not: its Vulkan back end (the FSR SDK's backend/vk/ffx_vk.cpp) binds through descriptor sets, and the same
+    // run reports nothing without the extension, so it is enabled off Windows only. The rest they use (8/16-bit
+    // arithmetic, integer dot products, subgroup size control, buffer device addresses) is Vulkan 1.1-1.3 core and
+    // enabled with it below.
     int has_dbuf = 0, has_csd = 0;
     if (vk_fsr4_wanted()) {
+#ifndef _WIN32
         if (has_ext(ep, ne, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME)) {
             has_dbuf = 1;
             ext[n_ext++] = VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME;
             CHAIN(dbuf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT);
         }
+#endif
         const char *csd_ext = has_ext(ep, ne, VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME)
                                   ? VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME
                               : has_ext(ep, ne, VK_NV_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME)

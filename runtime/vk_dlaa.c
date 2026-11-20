@@ -1159,13 +1159,16 @@ int vk_dlaa_frame(void) {
                      __ATOMIC_RELAXED);
     // What no longer runs gives its video memory back after OFF_PRESENTS presents (not at once: a click through the
     // menu's choices would make and free the work images per click). Without DLSS (XeSS, nothing, or DLSS failed) the
-    // sizes' DLSS features go, without FSR 3 its internal images; with no temporal AA at all the sizes' work images too.
-    // XeSS keeps its context until exit: making it again needs the device idle.
-    static uint32_t no_dlss, no_fsr3, no_taa;
+    // sizes' DLSS features go, without FSR 3 its internal images, without FSR 4 its contexts; with no temporal AA at all
+    // the sizes' work images too. XeSS keeps its context until exit: making it again needs the device idle.
+    static uint32_t no_dlss, no_fsr3, no_fsr4, no_taa;
     no_dlss = D.backend == BK_DLSS && dl_active() ? 0 : no_dlss + 1;
     no_fsr3 = D.backend == BK_FSR3 && dl_active() ? 0 : no_fsr3 + 1;
+    no_fsr4 = D.backend == BK_FSR4 && dl_active() ? 0 : no_fsr4 + 1;
     no_taa = dl_active() ? 0 : no_taa + 1;
     if (no_fsr3 == OFF_PRESENTS) vk_fsr3_release();
+    if (no_fsr4 == OFF_PRESENTS) vk_fsr4_trim();
+    vk_fsr4_sweep();
     if (no_dlss == OFF_PRESENTS)
         for (int i = 0; i < 3; i++)
             if (D.sizes[i].feat) retire_feature(D.sizes[i].feat), D.sizes[i].feat = NULL;
