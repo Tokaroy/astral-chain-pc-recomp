@@ -317,12 +317,28 @@ NVN_API(nvnMemoryPoolFinalize) {
 }
 static uint64_t flush_stat[2][3][2];   // nvn_flush_stats
 
+// AC_TRACE=perf only. A thread adds its counts to the shared ones FLUSH_BATCH calls at a time, as nvn_called does:
+// the threads that record draws flush about 1100 buffer ranges a frame between them, and two locked adds per call on
+// one cache line took 3.3 to 3.9% of the draw thread's cycles in every traced run (74% of nvnBufferFlushMappedRange
+// on those two instructions; 1.0% of the thread without the trace). The counts lag by under FLUSH_BATCH calls a thread.
+#define FLUSH_BATCH 256
 static void flush_note(int kind, const pool_t *p, uint64_t size) {
+    static _Thread_local uint64_t own[2][3][2];
+    static _Thread_local uint32_t calls;
     uint32_t f = p ? p->flags : 0;
     int k = f & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS ? 2 : f & NVN_MEMORY_POOL_FLAGS_CPU_CACHED ? 0
           : f & NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED ? 1 : 2;
-    __atomic_fetch_add(&flush_stat[kind][k][0], 1, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&flush_stat[kind][k][1], size, __ATOMIC_RELAXED);
+    own[kind][k][0]++;
+    own[kind][k][1] += size;
+    if (++calls < FLUSH_BATCH) return;
+    calls = 0;
+    for (int i = 0; i < 2; i++)
+        for (int j = 0; j < 3; j++)
+            for (int m = 0; m < 2; m++)
+                if (own[i][j][m]) {
+                    __atomic_fetch_add(&flush_stat[i][j][m], own[i][j][m], __ATOMIC_RELAXED);
+                    own[i][j][m] = 0;
+                }
 }
 
 void nvn_flush_stats(uint64_t out[2][3][2]) {
