@@ -220,9 +220,11 @@ Every guest thread is a host thread. Astral Chain assumes Horizon's scheduler: t
 - Temporal upscaling (`vk_dlaa.c`, off by default): `upscaling` puts NVIDIA DLSS (`dlss`, through the driver's NGX core
   loaded at run time, Windows only), Intel XeSS (`xess`, `vk_xess.c`, `libxess.dll` loaded at run time, Windows only) or
   AMD FSR 3 (`fsr3`, `vk_fsr3.c`, every OS; `auto` is DLSS where it can run, else FSR 3) or AMD FSR 4 (`fsr4`,
-  `vk_fsr4.c`, through AMD's FSR API, `ffxCreateContext` / `ffxDispatch`, loaded at run time: AMD's
-  `amd_fidelityfx_loader_vk.dll` on Windows, fsr4-vk's `amd_fidelityfx_upscaler_vk.so` elsewhere; the API's structures
-  are declared in `vk_fsr4.c`, no SDK header is compiled in) in place of the game's SMAA
+  `vk_fsr4.c`, through AMD's FSR API, `ffxCreateContext` / `ffxDispatch`, loaded at run time: AMD's signed
+  `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` of the FSR SDK 2.4.0 on Windows, pinned by
+  `tools/fsr4_sdk.py` and shipped in the release's `bin/`; an `amd_fidelityfx_upscaler_vk.so` the player supplies
+  elsewhere; the menu offers it only on an AMD GPU with `VK_KHR_ray_query`, i.e. RDNA 2 or newer, which is what AMD's
+  FSR 4.1 supports; the API's structures are declared in `vk_fsr4.c`, no SDK header is compiled in) in place of the game's SMAA
   (`anti_aliasing = smaa | off`, for when none runs), in the mode `upscaling_quality` gives (`native`: DLAA, XeSS or FSR
   3 Native AA at the scene's own size; `quality` ... `ultra_performance`: a smaller scene, below); no SDK header or
   code of NVIDIA's
@@ -231,9 +233,9 @@ Every guest thread is a host thread. Astral Chain assumes Horizon's scheduler: t
   them into `fsr3_spv.h` in the build directory, and `vk_fsr3.c` is our own host for them (internal images, constant
   blocks, the seven passes in AMD's order). FSR 4 takes the same inputs as FSR 3; its library reads the colour, depth
   and motion vectors in SHADER_READ_ONLY_OPTIMAL (the API's COMPUTE_READ state), so `vk_fsr4.c` moves them out of
-  GENERAL around the dispatch and back, and passes a 1x1 R32F exposure image holding 1 (fsr4-vk refuses a dispatch
-  without one). With `upscaling = fsr4` at start the device also enables `VK_EXT_descriptor_buffer` and
-  `VK_KHR_compute_shader_derivatives` when the GPU has them: fsr4-vk's shaders need both. Astral Chain renders forward: a depth-only prepass writes the scene
+  GENERAL around the dispatch and back, and passes a 1x1 R32F exposure image holding 1 (some libraries refuse a
+  dispatch without one). With `upscaling = fsr4` at start the device also enables `VK_EXT_descriptor_buffer` and
+  `VK_KHR_compute_shader_derivatives` when the GPU has them, which FSR 4's shaders can use. Astral Chain renders forward: a depth-only prepass writes the scene
   depth (D32F_S8), the opaque draws and the transparents go into an R11G11B10F light target with it (two images,
   alternating per frame), the bloom chain reads it at half size and down, a composite tonemaps, SMAA anti-aliases and
   the HUD is drawn over the result. The AA arms on the first light-target pass after a prepass and runs, in place on

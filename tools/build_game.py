@@ -1031,6 +1031,12 @@ def main():
     xess = MAIN_ROOT / 'toolchain' / 'xess' / 'libxess.dll'
     if WIN and xess.is_file():
         shutil.copy2(xess, exe.parent / xess.name)
+    # AMD FSR 4 (runtime/vk_fsr4.c, upscaling = fsr4): AMD's signed loader and upscaler DLLs from toolchain/fsr4
+    # (tools/fsr4_sdk.py fetches them), loaded at run time when present; a release ships them in bin/ as for XeSS
+    for name in ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll'):
+        fsr4 = MAIN_ROOT / 'toolchain' / 'fsr4' / name
+        if WIN and fsr4.is_file():
+            shutil.copy2(fsr4, exe.parent / name)
     sections, image = pe_sections(exe) if WIN else elf_sections(exe)
     print(f'{below_root(exe)}: file {mib(exe.stat().st_size)}, '
           f'image {mib(image)}; ' + ', '.join(f'{k} {mib(v)}' for k, v in sections.items() if k.startswith('.') and v))

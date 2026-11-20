@@ -14,7 +14,7 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
                runtime headers, romfs.c, patches.c and ov_zstd.c (compiled per install), deps/ (headers and import
                libraries of SDL3, Opus, libvpx, Vulkan and VMA)
     bin/       ac_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, libxess.dll (Intel XeSS SDK),
-               ninja.exe
+               amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll (AMD FSR SDK, FSR 4), ninja.exe
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, astralchain.ini.example
     recomplauncher.json   what RecompLauncher does with the release (installer/progress.py), prepare.version = VERSION
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626; the installer's release string
@@ -53,6 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_xlate  # noqa: E402
 import check_content  # noqa: E402
 import ffx_sdk  # noqa: E402
+import fsr4_sdk  # noqa: E402
 import xess_sdk  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -328,6 +329,8 @@ def build_bin(out):
     shutil.copy2(dll, b / 'SDL3.dll')
     shutil.copy2(unpack('opus') / 'ucrt64' / 'bin' / 'libopus-0.dll', b / 'libopus-0.dll')
     shutil.copy2(xess_dir() / 'libxess.dll', b / 'libxess.dll')
+    for dll in fsr4_sdk.DLLS:   # AMD FSR 4 (runtime/vk_fsr4.c), signed by AMD
+        shutil.copy2(fsr4_dir() / dll, b / dll)
     shutil.copy2(unpack('ninja') / 'ninja.exe', b / 'ninja.exe')
 
 
@@ -338,6 +341,16 @@ def xess_dir():
     if not (dest / '.unpacked').is_file():
         shutil.rmtree(dest, ignore_errors=True)
         xess_sdk.extract(fetch('xess'), dest)
+        (dest / '.unpacked').write_text('')
+    return dest
+
+
+def fsr4_dir():
+    """amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll and the licence of the pinned FSR SDK."""
+    dest = WORK / 'fsr4'
+    if not (dest / '.unpacked').is_file():
+        shutil.rmtree(dest, ignore_errors=True)
+        fsr4_sdk.extract(fsr4_sdk.fetch(), dest)
         (dest / '.unpacked').write_text('')
     return dest
 
@@ -380,6 +393,7 @@ def collect_licenses(out):
         (MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt'),
         (xess_dir() / 'LICENSE.txt', 'XeSS-LICENSE.txt'),
         (xess_dir() / 'third-party-programs.txt', 'XeSS-third-party-programs.txt'),
+        (fsr4_dir() / 'LICENSE.txt', 'FidelityFX-SDK-2-LICENSE.txt'),   # FSR 4's signed DLLs (runtime/vk_fsr4.c)
     ]
     for src, name in pairs:
         shutil.copy2(src, lic / name)
@@ -633,7 +647,7 @@ def prove(out, cpu='v3'):
          '--ninja', out / 'bin' / 'ninja.exe', '--version', version, '--gen', gen, '--out', chk, '--exefs', ext / 'exefs',
          '--romfs', ext / 'romfs', '--profile', chk / 'profile'], env=env)
     print(f'prove: build {time.time() - t0:.0f} s')
-    for dll in ('SDL3.dll', 'libopus-0.dll', 'libxess.dll'):
+    for dll in ('SDL3.dll', 'libopus-0.dll', 'libxess.dll', *fsr4_sdk.DLLS):
         shutil.copy2(out / 'bin' / dll, chk / dll)
     failed = []
     for probe in PROBES:

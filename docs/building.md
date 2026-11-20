@@ -315,9 +315,11 @@ with draws drawn again; `AC_DLAA_MVDEBUG=1` with `--shot` shows the vectors (x r
 `runtime/`, `build_game.py` calls `tools/ffx_sdk.py`, which fetches the pinned FidelityFX SDK files once into
 `toolchain\ffx-sdk\` and compiles the passes with `glslc` into `fsr3_spv.h` in the build directory, again only when
 the pins or the options change. A change to `runtime/vk_fsr3.c` wants the same scripted run with `AC_UPSCALING=fsr3`, native and upscaled.
-AMD FSR 4 (`AC_UPSCALING=fsr4`) is not built from source: put AMD's `amd_fidelityfx_loader_vk.dll` and
-`amd_fidelityfx_upscaler_vk.dll` (FidelityFX SDK 2.4.0 or later, `Kits/FidelityFX/signedbin/`) next to `astralchain.exe`,
-or on Linux fsr4-vk's `amd_fidelityfx_upscaler_vk.so` next to `astralchain` (or name either with `AC_FSR4_LIB`). A
+AMD FSR 4 (`AC_UPSCALING=fsr4`) is not built from source: AMD ships it only as signed DLLs. `tools/fsr4_sdk.py`
+downloads the pinned `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` (FSR SDK 2.4.0) and their
+licence into `toolchain/fsr4/`, and `tools/build_game.py` copies the DLLs next to `astralchain.exe`. Off Windows there
+is no AMD library: put an `amd_fidelityfx_upscaler_vk.so` with the same entry points next to `astralchain`, or name
+one with `AC_FSR4_LIB`. A
 change to `runtime/vk_fsr4.c` wants the same scripted run with `AC_UPSCALING=fsr4`, whose log names the library, the
 provider (`fsr4: context ... provider ...`) and the first dispatch; a refusal is logged with the library's reason and
 FSR 3 takes over.

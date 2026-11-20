@@ -2,11 +2,13 @@
 // (astralchain.ini upscaling = fsr4), through AMD's FSR API: ffxCreateContext with an upscale description chained to the
 // Vulkan back end's, ffxDispatch with the frame's resources, ffxDestroyContext at exit.
 //
-// The library is loaded at run time from the folder of the executable, never shipped:
-// - Windows: amd_fidelityfx_loader_vk.dll, which finds amd_fidelityfx_upscaler_vk.dll next to it (AMD's signed DLLs of
-//   the FSR SDK; SDK 2.4.0 carries FSR 4.1.2, with the Ryzen AI Max "Strix Halo" iGPUs among the supported GPUs);
-// - elsewhere: amd_fidelityfx_upscaler_vk.so, fsr4-vk (github.com/Astyyyyy/fsr4-vk, GPL-3.0), the community Vulkan port
-//   of FSR 4.1.1 built from AMD's DLL, which exports the same five entry points.
+// The library is loaded at run time from the folder of the executable:
+// - Windows: amd_fidelityfx_loader_vk.dll, which finds amd_fidelityfx_upscaler_vk.dll next to it: AMD's signed DLLs of
+//   the FSR SDK 2.4.0 (FSR 4.1.2), which the release ships in bin/ and the installer copies (tools/fsr4_sdk.py pins
+//   them). AMD's FSR 4.1 runs on the Radeon RX 6000 series and newer and on the Ryzen processors with RDNA 2 or newer
+//   graphics; the menu offers it on those only (vk_fsr4_offered).
+// - elsewhere: amd_fidelityfx_upscaler_vk.so, not shipped (AMD publishes no Linux library): a library with the same
+//   entry points that the player puts there.
 // AC_FSR4_LIB names another file. No AMD header is compiled in: the few structures used are declared here from the SDK's
 // C ABI (ffx_api.h, ffx_api_types.h, vk/ffx_api_vk.h, upscalers/include/ffx_upscale.h of SDK 2.4.0), as vk_xess.c does
 // for Intel's.
@@ -137,14 +139,14 @@ static struct {
     PFN_Query query;
     PFN_Dispatch dispatch;
     int tried, loaded, failed;
-    int old_backend;   // the library takes only the deprecated back end description (fsr4-vk up to b0125ea)
+    int old_backend;   // the library takes only the deprecated back end description (a Linux library)
     char path[PLAT_PATH_MAX];
     struct {
         FfxContext ctx;
         uint32_t w, h, ow, oh, flags;
     } ctx[CTX_MAX];
     uint64_t evals;
-    VkImage exposure;   // 1x1 R32F holding 1: fsr4-vk wants an exposure image even for the tonemapped composite
+    VkImage exposure;   // 1x1 R32F holding 1: a Linux library wants an exposure image even for the tonemapped composite
     VmaAllocation exposure_mem;
 } F;
 
@@ -164,18 +166,24 @@ int vk_fsr4_available(void) { return F.loaded && !F.failed; }
 #define FSR4_LIB "amd_fidelityfx_upscaler_vk.so"
 #endif
 
+// The library's path: AC_FSR4_LIB, else FSR4_LIB next to the executable. 0 when the executable's path is unknown.
+static int lib_path(char *path, size_t size) {
+    const char *own = cfg_get("AC_FSR4_LIB");
+    if (own && *own) {
+        snprintf(path, size, "%s", own);
+        return 1;
+    }
+    int len = plat_exe_path(path, size - 40);
+    char *cut = len ? plat_last_sep(path) : NULL;
+    if (!cut) return 0;
+    strcpy(cut + 1, FSR4_LIB);
+    return 1;
+}
+
 static int lib_load(void) {
     if (F.tried) return F.loaded;
     F.tried = 1;
-    const char *own = cfg_get("AC_FSR4_LIB");
-    if (own && *own) {
-        snprintf(F.path, sizeof F.path, "%s", own);
-    } else {
-        int len = plat_exe_path(F.path, sizeof F.path - 40);
-        char *cut = len ? plat_last_sep(F.path) : NULL;
-        if (!cut) return 0;
-        strcpy(cut + 1, FSR4_LIB);
-    }
+    if (!lib_path(F.path, sizeof F.path)) return 0;
     F.lib = plat_lib_open(F.path);
     if (!F.lib) {
         rt_log("fsr4: cannot load %s (put AMD's FSR 4 library there): FSR 4 off", F.path);
@@ -193,9 +201,35 @@ static int lib_load(void) {
     return F.loaded = 1;
 }
 
+// Whether the menu offers FSR 4 on this GPU: an AMD Radeon of the RDNA 2 architecture or newer (AMD's FSR 4.1 runs
+// on the Radeon RX 6000 series and newer and on the Ryzen processors with RDNA 2 or newer graphics; told apart by
+// VK_KHR_ray_query, which AMD's drivers offer from RDNA 2 on, the first Radeons with ray accelerators), with the
+// library there. Whether AMD's library takes this GPU is known only once it runs (an integrated GPU AMD does not list
+// fails ffxCreateContext, and FSR 3 runs), so a choice that fails says so in the menu.
+static int offered;
+
+static int has_ray_query(void) {
+    uint32_t n = 0;
+    vkEnumerateDeviceExtensionProperties(vk_ctx()->phys, NULL, &n, NULL);
+    VkExtensionProperties *e = calloc(n ? n : 1, sizeof *e);
+    vkEnumerateDeviceExtensionProperties(vk_ctx()->phys, NULL, &n, e);
+    int found = 0;
+    for (uint32_t i = 0; i < n && !found; i++) found = !strcmp(e[i].extensionName, VK_KHR_RAY_QUERY_EXTENSION_NAME);
+    free(e);
+    return found;
+}
+
 void vk_fsr4_init(void) {
+    char path[PLAT_PATH_MAX];
+    int amd = vk_ctx()->props.vendorID == 0x1002, rdna2 = amd && has_ray_query();
+    int lib = lib_path(path, sizeof path) && plat_file_exists(path);
+    offered = rdna2 && lib;
+    if (vk_fsr4_wanted() || amd)
+        rt_log("fsr4: %s offered (AMD GPU %d, RDNA 2 or newer %d, library %d)", offered ? "is" : "is not", amd, rdna2, lib);
     if (vk_fsr4_wanted()) lib_load();
 }
+
+int vk_fsr4_offered(void) { return offered; }
 
 static int fail(const char *what, FfxReturn r) {
     rt_log("fsr4: %s failed (%u): FSR 4 off for this run", what, (unsigned)r);
@@ -234,7 +268,7 @@ static uint32_t surface_format(VkFormat f) {
     }
 }
 
-// The inputs are read as sampled images (COMPUTE_READ, which fsr4-vk insists on), the output written as storage.
+// The inputs are read as sampled images (COMPUTE_READ, which a Linux library insists on), the output written as storage.
 static int resource(FfxResource *r, const Fsr4Image *im, uint32_t usage, uint32_t state, const char *what) {
     static int warned;
     if (im->level || im->layer) {
@@ -343,7 +377,7 @@ static FfxContext *context(uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, uin
     uint64_t t0 = plat_now_ns();
     FfxContext ctx = NULL;
     FfxReturn r = F.create(&ctx, &cu.header, NULL);
-    if (r != 0 && !F.old_backend) {   // fsr4-vk up to b0125ea knows only the deprecated back end description
+    if (r != 0 && !F.old_backend) {   // a Linux library knows only the deprecated back end description
         F.old_backend = 1;
         be.header.type = FFX_TYPE_BACKEND_VK_OLD;
         r = F.create(&ctx, &cu.header, NULL);

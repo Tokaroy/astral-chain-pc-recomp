@@ -2,9 +2,8 @@
 // AA) or from a smaller scene, behind AC_UPSCALING=fsr4 (astralchain.ini upscaling = fsr4). vk_dlaa.c finds the scene,
 // jitters it, makes its motion vectors and calls vk_fsr4_evaluate where the upscaler runs; this file only talks to AMD's
 // FSR API (ffxCreateContext / ffxDispatch), loaded at run time from beside the executable: on Windows
-// amd_fidelityfx_loader_vk.dll with amd_fidelityfx_upscaler_vk.dll next to it (AMD's signed DLLs of the FSR SDK, 2.4.0
-// for FSR 4.1.2), elsewhere amd_fidelityfx_upscaler_vk.so (fsr4-vk, the community Vulkan port of FSR 4.1.1). Neither is
-// shipped: the player puts the library there.
+// amd_fidelityfx_loader_vk.dll with amd_fidelityfx_upscaler_vk.dll next to it (AMD's signed DLLs of the FSR SDK 2.4.0,
+// FSR 4.1.2, shipped with the release), elsewhere amd_fidelityfx_upscaler_vk.so, which the player puts there.
 #pragma once
 #include "vk.h"
 
@@ -12,6 +11,7 @@ int vk_fsr4_wanted(void);      // the setting is fsr4 at start
 int vk_fsr4_tried(void);       // the library was looked for in this run (it was chosen at start)
 void vk_fsr4_init(void);       // vk_dlaa_init, the device up: loads the library when the setting is fsr4
 int vk_fsr4_available(void);   // loaded and not failed in this run
+int vk_fsr4_offered(void);     // the menu lists FSR 4: an AMD RDNA 2 or newer GPU, the library there (after init)
 
 typedef struct {
     VkImage image;

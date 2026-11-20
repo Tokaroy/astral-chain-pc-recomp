@@ -284,7 +284,7 @@ static int create_device(void) {
     // XeSS's, when its whole list and every feature it asks for are there; its one non-core feature structure is chained
     if (vk_xess_device_exts(g_vk.instance, g_vk.phys, ep, ne, ext, &n_ext, 72))
         CHAIN(mut, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT);
-    // FSR 4 (vk_fsr4.c), only with upscaling = fsr4: AMD's shaders, run by fsr4-vk on RADV, bind through descriptor
+    // FSR 4 (vk_fsr4.c), only with upscaling = fsr4: AMD's shaders, run by a Linux library on RADV, bind through descriptor
     // buffers and take derivatives in compute shaders; the rest they use (8/16-bit arithmetic, integer dot products,
     // subgroup size control, buffer device addresses) is Vulkan 1.1-1.3 core and enabled with it below.
     int has_dbuf = 0, has_csd = 0;
