@@ -2,9 +2,10 @@
 // Host functions at synthetic guest addresses: the HOST_OVERRIDE / HOST_OBSERVER
 // linker tables, the registry behind them, and the calls between host and guest (rt_call, rt_original).
 //
-// Every registered function dispatches through hostfn_entry, which counts the call (hostfn_count_calls), traces the
-// first one (AC_TRACE=host) and tail-calls the real function. The registry is fixed by hostfn_seal, which builds the dispatch
-// table; guest threads start after that, so lookups need no lock.
+// Every registered function dispatches through hostfn_entry, which in play jumps straight to the real function; with
+// AC_TRACE=host or AC_CORE_DIAG, and for nn::fs, it goes through hostfn_full, which counts the call
+// (hostfn_count_calls), traces the first one (AC_TRACE=host) and raises the host depth (AC_CORE_DIAG). The registry is
+// fixed by hostfn_seal, which builds the dispatch table; guest threads start after that, so lookups need no lock.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -120,8 +121,19 @@ __attribute__((noinline, noreturn, cold)) static void bad_entry(Cpu *c) {
              ldr_describe(c->x[30], lr, sizeof lr));
 }
 
-// kern_host_track: the call counted in the thread's host depth. Not a tail call, so the host stack holds this frame
-// while fn runs; the jump out of fn (ExitThread) leaves the depth raised on a thread that ends.
+// The host depth. Asynchronous preemption (kernel.c ap_try) may move a core owner to kern_ap_stub only while it runs
+// game code with no host frame under it: a host function may hold a host lock or keep state on the host stack while
+// guest code it called runs. A host function's own code is never moved: its host rip is outside the lifted code, which
+// ap_try checks first. So the depth is raised around the guest code that host code runs, in rt_call and rt_original,
+// the only ways host code enters guest code (keep it so: a host function that called a lifted function directly could
+// be preempted inside it), and not around every host call. Raising it on every call (a frame in hostfn_entry, a second
+// one here and the depth's stores) took 6.4% of the town's draw command thread (0x1007, pinned to virtual core 1 with
+// the work that bounds the frame), about 60 000 calls a frame of NVN getters and setters of ten instructions each.
+// Jumping straight to the function took that thread's CPU time down by 4.9% and 4.2% (0.37 and 0.39 ms a frame) and
+// the frame interval by 1.7% and 0.9% in two in-run A/Bs of the camera turn on the ROG Ally at 14 W (2026-11-20).
+// AC_CORE_DIAG still raises it on every call (hostfn_track_calls), for its "host" class of core waits.
+// Not a tail call, so the host stack holds this frame while fn runs; the jump out of fn (ExitThread) leaves the depth
+// raised on a thread that ends.
 __attribute__((noinline)) static void hostfn_tracked(Cpu *c, GuestFn fn) {
     void *t = c->thread;
     int *d = kern_host_depth(t);
@@ -132,33 +144,41 @@ __attribute__((noinline)) static void hostfn_tracked(Cpu *c, GuestFn fn) {
     if (!n && kern_preempt_pending(t)) kern_host_left(t);
 }
 
+// The count per function feeds the probes' statistics and the AC_TRACE=host report; a game run turns it off (main.c)
+// and then counts nothing, unless AC_CORE_DIAG sends every call through hostfn_full. That counting is a locked
+// increment of a word every guest thread shares: in play the game's threads call the same NVN functions thousands of
+// times a frame, the word's cache line moved between their cores on every call, and 4.3% of the process's cycles went
+// into this one instruction. Without it (AC_CORE_DIAG) each thread counts its own calls and adds them to the total
+// CALL_BATCH at a time, so the total then lags by less than CALL_BATCH per thread.
+#define CALL_BATCH 4096
+static int counting = 1;
+static int track_calls;                   // AC_CORE_DIAG: every call in the host depth
+static int full_path = 1;                 // counting || track_calls: hostfn_entry goes through hostfn_full
+static uint64_t batched;                  // calls counted per thread and handed over, CALL_BATCH at a time
+static _Thread_local uint32_t own_calls;
+
+void hostfn_count_calls(int on) {
+    counting = on;
+    full_path = counting || track_calls;
+}
+
+void hostfn_track_calls(void) {
+    track_calls = 1;
+    full_path = 1;
+}
+
 // nn::fs: the call waits for the disk and the OS, and on the Switch it is an IPC request that blocks its thread, so
 // the thread gives its virtual core up for it. AC_CORE_DIAG found the game's loader threads (priority 58) holding
 // a core through CloseFile and CreateCacheStorage while job workers and better threads waited 2-6 ms for it.
 __attribute__((noinline)) static void hostfn_blocking(Cpu *c, GuestFn fn) {
     int away = kern_core_away();
-    if (kern_host_track && c->thread) hostfn_tracked(c, fn);
+    if (track_calls && c->thread) hostfn_tracked(c, fn);
     else fn(c);
     kern_core_back(&away);
 }
 
-// The count per function feeds the probes' statistics and the AC_TRACE=host report; a game run only prints the total
-// at the end of a --seconds run and turns the per-function counting off (main.c). That counting is a locked increment
-// of a word every guest thread shares: in play the game's threads call the same NVN functions thousands of times a
-// frame, the word's cache line moved between their cores on every call, and 4.3% of the process's cycles went into
-// this one instruction. With it off each thread counts its own calls and adds them to the total CALL_BATCH at a
-// time, so the total then lags by less than CALL_BATCH per thread.
-#define CALL_BATCH 4096
-static int counting = 1;
-static uint64_t batched;                  // calls counted per thread and handed over, CALL_BATCH at a time
-static _Thread_local uint32_t own_calls;
-
-void hostfn_count_calls(int on) { counting = on; }
-
-static void hostfn_entry(Cpu *c) {
-    uint64_t i = (c->pc - RT_HOSTFN_BASE) >> 4;
-    if (__builtin_expect((c->pc & 15) || i >= (uint64_t)nslots, 0)) bad_entry(c);
-    Slot *s = &slots[i];
+__attribute__((noinline)) static void hostfn_full(Cpu *c) {
+    Slot *s = &slots[(c->pc - RT_HOSTFN_BASE) >> 4];   // hostfn_entry checked the address
     if (__builtin_expect(counting, 0)) {
         uint64_t n = __atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED);
         if (__builtin_expect(!n && (rt_trace & RT_TRACE_HOSTCALL), 0)) {
@@ -173,10 +193,19 @@ static void hostfn_entry(Cpu *c) {
         hostfn_blocking(c, s->fn);
         return;
     }
-    if (__builtin_expect(kern_host_track && c->thread, 0)) {
+    if (track_calls && c->thread) {
         hostfn_tracked(c, s->fn);
         return;
     }
+    __attribute__((musttail)) return s->fn(c);
+}
+
+// No stack frame in play: the slot, then a jump to the function. The rest is in hostfn_full.
+static void hostfn_entry(Cpu *c) {
+    uint64_t i = (c->pc - RT_HOSTFN_BASE) >> 4;
+    if (__builtin_expect((c->pc & 15) || i >= (uint64_t)nslots, 0)) bad_entry(c);
+    const Slot *s = &slots[i];
+    if (__builtin_expect(full_path | s->blocking, 0)) __attribute__((musttail)) return hostfn_full(c);
     __attribute__((musttail)) return s->fn(c);
 }
 
@@ -216,32 +245,53 @@ void hostfn_report(void) {
     for (int i = 0; i < n; i++) rt_log("  %10llu  %s", (unsigned long long)order[i]->calls, order[i]->name);
 }
 
-uint64_t rt_call(Cpu *c, uint64_t fn, int n, ...) {
-    if (n < 0 || n > 8) rt_fatal("rt_call: %d arguments", n);
-    if (!sealed) hostfn_seal();
-    va_list ap;
-    va_start(ap, n);
-    for (int i = 0; i < n; i++) c->x[i] = va_arg(ap, uint64_t);
-    va_end(ap);
+// Guest code run from host code, inside the thread's host depth (above, hostfn_tracked), except at the start of a
+// thread, a fiber or the game (rt_call_top), where no host function sits under it.
+static uint64_t call_guest(Cpu *c, uint64_t fn, int nested) {
     uint64_t lr = c->x[30], pc = c->pc;
     c->x[30] = RT_RET_HOST;
     c->pc = fn;
     rt_fpcr_sync(c);   // guest code may start here on a host thread or fiber that has not run it
+    void *t = nested && kern_host_track ? c->thread : NULL;
+    int *d = t ? kern_host_depth(t) : NULL;
+    if (d) __atomic_store_n(d, *d + 1, __ATOMIC_RELAXED);
     rt_dispatch(c);
+    if (d) {
+        int n = *d - 1;
+        __atomic_store_n(d, n, __ATOMIC_RELAXED);
+        if (!n && kern_preempt_pending(t)) kern_host_left(t);
+    }
     c->x[30] = lr;
     c->pc = pc;
     return c->x[0];
+}
+
+static uint64_t call_args(Cpu *c, uint64_t fn, int n, va_list ap, int nested) {
+    if (n < 0 || n > 8) rt_fatal("rt_call: %d arguments", n);
+    if (!sealed) hostfn_seal();
+    for (int i = 0; i < n; i++) c->x[i] = va_arg(ap, uint64_t);
+    return call_guest(c, fn, nested);
+}
+
+uint64_t rt_call(Cpu *c, uint64_t fn, int n, ...) {
+    va_list ap;
+    va_start(ap, n);
+    uint64_t r = call_args(c, fn, n, ap, 1);
+    va_end(ap);
+    return r;
+}
+
+uint64_t rt_call_top(Cpu *c, uint64_t fn, int n, ...) {
+    va_list ap;
+    va_start(ap, n);
+    uint64_t r = call_args(c, fn, n, ap, 0);
+    va_end(ap);
+    return r;
 }
 
 uint64_t rt_original(Cpu *c) {
     uint64_t i = (c->pc - RT_HOSTFN_BASE) >> 4;
     if ((c->pc & 15) || i >= (uint64_t)nslots || !slots[i].original)
         rt_fatal("rt_original at %#llx: not inside an observer with a guest definition", (unsigned long long)c->pc);
-    uint64_t lr = c->x[30], pc = c->pc;
-    c->x[30] = RT_RET_HOST;
-    c->pc = slots[i].original;
-    rt_dispatch(c);
-    c->x[30] = lr;
-    c->pc = pc;
-    return c->x[0];
+    return call_guest(c, slots[i].original, 1);
 }

@@ -77,8 +77,10 @@ static void cb_module_finis(Cpu *c) {
 // ---- checkpoints (host.h)
 static void stats_line(void) {
     RtStats s = rt_stats();
-    rt_logf("boot: passed (%llu SVCs, %llu threads, %llu host calls)\n", (unsigned long long)s.svcs,
-           (unsigned long long)s.threads, (unsigned long long)s.host_calls);
+    char calls[48] = "";   // a game run counts host calls only for AC_TRACE=host (main.c) or AC_CORE_DIAG
+    if (s.host_calls) snprintf(calls, sizeof calls, ", %llu host calls", (unsigned long long)s.host_calls);
+    rt_logf("boot: passed (%llu SVCs, %llu threads%s)\n", (unsigned long long)s.svcs, (unsigned long long)s.threads,
+            calls);
 }
 
 void rt_boot_event(const char *what, Cpu *c, const char *detail) {
@@ -284,7 +286,7 @@ static void guest_main(Cpu *c) {
     char d[128];
     rt_log("boot: ENTER nn::init::Start at %s, main thread %#x", ldr_describe(start, d, sizeof d), handle);
     // nn::init::Start(main thread handle, arguments region, loader_ready, module_inits, module_finis)
-    rt_call(c, start, 5, (uint64_t)handle, (uint64_t)0, cb_addr[0], cb_addr[1], cb_addr[2]);
+    rt_call_top(c, start, 5, (uint64_t)handle, (uint64_t)0, cb_addr[0], cb_addr[1], cb_addr[2]);
     rt_fatal("boot: nn::init::Start returned");
 }
 

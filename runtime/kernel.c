@@ -51,7 +51,8 @@ typedef struct Fiber Fiber;
 
 struct RtThread {
     int preempt;               // first member: rt_dispatch reads it (host.h kern_preempt_pending)
-    int host_depth;            // second member: host calls and SVCs in progress, while kern_host_track (host.h)
+    int host_depth;            // second member: guest code run from host code and SVCs in progress, while
+                               // kern_host_track (host.h, hostfn.c)
     uint32_t handle;
     uint64_t id;
     Cpu *cpu;                  // the thread's own context
@@ -333,10 +334,10 @@ static int core_allowed(const RtThread *t, int c) { return (int)((t->mask >> c) 
 // stretch of game code with neither keeps it (AC_CORE_DIAG: 0.5-1.1 ms of thread-time per frame, waits to 16 ms and
 // more). With it on, three parts, all of which MacNativeGames found necessary:
 // - The waiter interrupts the owner (plat_intr_stop) when it has waited AP_FIRST_NS, then every
-//   millisecond: if the owner's host rip is in the lifted modules' code (g_gen_lo..g_gen_hi) and its host depth is 0
-//   (not in a host call or SVC, nor in game code a host call made), it holds no host lock, so its rip is moved to
-//   kern_ap_stub, which saves every volatile register, gives the core up like a checkpoint (kern_ap_yield) and jumps
-//   back. Otherwise it is only marked, as before.
+//   millisecond: if the owner's host rip is in the lifted modules' code (g_gen_lo..g_gen_hi), so not in a host call or
+//   SVC, and its host depth is 0 (not in game code a host call runs: hostfn.c rt_call, rt_original), it holds no host
+//   lock, so its rip is moved to kern_ap_stub, which saves every volatile register, gives the core up like a
+//   checkpoint (kern_ap_yield) and jumps back. Otherwise it is only marked, as before.
 // - Priority inheritance (eff_prio): a thread owning a guest mutex counts at the priority of the best thread blocked on
 //   it, for granting, kicking, preempting and yielding. Without it MacNativeGames' game stopped at its first
 //   "Continue" (a better thread took the core of the low-priority owner of a mutex it then waited for).
@@ -671,6 +672,7 @@ static void diag_init(void) {
     g_diag = e && *e && strcmp(e, "0");
     if (g_diag) {
         kern_host_track = 1;
+        hostfn_track_calls();   // the "host" class: a core owner inside any host call
         rt_log("core-diag: on (AC_CORE_DIAG)");
     }
 }
@@ -1489,7 +1491,7 @@ static void thread_main(void *p) {
     Cpu *c = t->cpu;
     c->sp = t->stack_top & ~15ull;
     if (!plat_jmp_save(&t->exit_jmp)) {
-        rt_call(c, t->entry, 1, t->arg);
+        rt_call_top(c, t->entry, 1, t->arg);
         char d[128];
         rt_fatal("guest thread %#x: entry %s returned (Horizon threads end with ExitThread)", t->handle,
                  ldr_describe(t->entry, d, sizeof d));
@@ -2164,7 +2166,7 @@ static void fiber_main(void *p) {
     fiber_resumed();
     Cpu *c = f->cpu;
     tcur->host_depth = 0;   // a new fiber starts at the top level; each context restores its own depth on resume
-    uint64_t next = rt_call(c, f->func, 1, f->arg);
+    uint64_t next = rt_call_top(c, f->func, 1, f->arg);
     f->state = F_DONE;
     Fiber *n = NULL;
     if (next && !(n = fiber_find(next)))

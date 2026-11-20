@@ -140,7 +140,7 @@ void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
         svc_body(c, imm, pc);
         return;
     }
-    void *t = c->thread;   // kern_host_track: the SVC counted in the thread's host depth (hostfn.c hostfn_tracked)
+    void *t = c->thread;   // kern_host_track: the SVC counted in the thread's host depth (hostfn.c)
     int *d = kern_host_depth(t);
     __atomic_store_n(d, *d + 1, __ATOMIC_RELAXED);
     svc_body(c, imm, pc);

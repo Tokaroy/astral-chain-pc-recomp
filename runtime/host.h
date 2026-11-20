@@ -120,9 +120,12 @@ void hostfn_add_override(const char *name, GuestFn fn);    // an override outsid
 const char *hostfn_name(uint64_t addr);                    // name registered at a synthetic address, NULL if none
 void hostfn_seal(void);                                    // build the dispatch table (rt_dispatch_init over every
                                                            // linked module); idempotent; registration ends here
-uint64_t hostfn_calls(void);                               // host-function calls so far, all threads
+uint64_t hostfn_calls(void);                               // host-function calls so far, all threads (0 in play
+                                                           // without AC_TRACE=host or AC_CORE_DIAG: not counted)
 void hostfn_report(void);                                  // call count per host function to stderr, busiest first
-void hostfn_count_calls(int on);                           // count per function (on at start) or only the total
+void hostfn_count_calls(int on);                           // count per function (on at start) or nothing (play)
+void hostfn_track_calls(void);                             // AC_CORE_DIAG: every host call in the thread's host depth
+                                                           // (and counted in the total); before guest threads start
 int hostfn_table_size(int observers);                      // linked HOST_OVERRIDE (0) / HOST_OBSERVER (1) entries
 const char *hostfn_table_name(int observers, int i);       // symbol of linked entry i, NULL past the end
 uint64_t rt_original(Cpu *c);                              // inside an observer: call the guest definition with the
@@ -131,7 +134,11 @@ uint64_t rt_original(Cpu *c);                              // inside an observer
 uint64_t rt_call(Cpu *c, uint64_t fn, int n, ...);         // host -> guest, section 2.3. n <= 8 arguments, each read
                                                            // as uint64_t: cast every argument. Seals the dispatch
                                                            // table on first use. Sets x30 = RT_RET_HOST, restores
-                                                           // x30 and pc, returns x0. Does not touch sp
+                                                           // x30 and pc, returns x0. Does not touch sp. The guest
+                                                           // code runs inside the thread's host depth (hostfn.c)
+uint64_t rt_call_top(Cpu *c, uint64_t fn, int n, ...);     // rt_call outside the host depth: a guest thread's,
+                                                           // fiber's or the game's first function, with no host
+                                                           // function under it
 #define RT_RET_HOST 0x73000ff000ull                        // x30 sentinel inside the host-function window; a jump to
                                                            // it is a named fatal
 
@@ -225,8 +232,9 @@ void kern_core_back(int *away);
 void kern_checkpoint(void);                                // preemption point, at every SVC and indirect call
 // A preempt request is pending for the thread (Cpu.thread): its RtThread starts with the flag (kernel.c).
 static inline int kern_preempt_pending(const void *thread) { return __atomic_load_n((const int *)thread, __ATOMIC_RELAXED); }
-// Set once before guest threads start (AC_CORE_DIAG, AC_ASYNC_PREEMPT): host calls (hostfn.c) and SVCs (svc.c) count their depth in
-// the thread's second int, so the kernel knows whether a core owner runs game code at the top level.
+// Set once before guest threads start (AC_CORE_DIAG, AC_ASYNC_PREEMPT): guest code run from host code (hostfn.c rt_call,
+// rt_original), SVCs (svc.c) and, with AC_CORE_DIAG, every host call count their depth in the thread's second int, so
+// the kernel knows whether a core owner runs game code at the top level.
 extern int kern_host_track;
 static inline int *kern_host_depth(void *thread) { return (int *)thread + 1; }
 void kern_host_left(void *thread);                         // back at depth 0 with a preempt request pending

@@ -136,7 +136,7 @@ static size_t host_decode(uint64_t dst, uint64_t cap, uint64_t src, uint64_t siz
               : ZSTD_decompressDCtx(dctx, gp(dst), (size_t)cap, gp(src), (size_t)size);
 }
 
-// The host call inside the thread's host depth, as hostfn.c counts it for asynchronous preemption.
+// The decode inside the thread's host depth (hostfn.c), for AC_CORE_DIAG's "host" class.
 static size_t tracked_decode(Cpu *c, uint64_t dst, uint64_t cap, uint64_t src, uint64_t size, uint64_t dict,
                              uint64_t dict_size, uint64_t ddict, int *ok) {
     int *d = kern_host_track && c->thread ? kern_host_depth(c->thread) : NULL;
