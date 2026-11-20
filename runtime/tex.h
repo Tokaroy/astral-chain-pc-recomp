@@ -48,6 +48,8 @@ void astc_decode_ldr_mt(const uint8_t *blocks, uint32_t width, uint32_t height, 
 // only answer yes. The --probe-astc oracle decodes every block the scan calls opaque and checks its alpha.
 bool astc_block_alpha_possible(const uint8_t block[16], uint32_t bw, uint32_t bh);
 bool astc_storage_alpha_possible(const uint8_t *mem, uint64_t bytes, uint32_t bw, uint32_t bh);
+// tex_astc_mt.c: the same answer, a large storage scanned over the ASTC worker pool (for a thread that waits on it).
+bool astc_storage_alpha_possible_mt(const uint8_t *mem, uint64_t bytes, uint32_t bw, uint32_t bh);
 
 // ---- vk_formats.c (LAS Recomp runtime/nvn/vulkan/textures.c format table, MIT) ----
 typedef struct TexVkFormat {

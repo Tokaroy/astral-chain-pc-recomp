@@ -726,7 +726,7 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
             // Stamped before the scan reads the bytes: a write after this point carries a newer generation, so the
             // first upload can tell whether this verdict still describes the storage (upload, bc_verdict_current).
             if (vk_mem_changed(k->addr, L.size, 0, &bc_gen) < 0) bc_gen = 0;
-            bc_verdict = astc_storage_alpha_possible(t->mem, L.size, f.astc_bw, f.astc_bh);
+            bc_verdict = astc_storage_alpha_possible_mt(t->mem, L.size, f.astc_bw, f.astc_bh);
         }
         bc_scan_ns = plat_now_ns() - s0;
         if (!bc_verdict) {
@@ -1387,7 +1387,7 @@ static void upload(Tex *e) {
     // page of the storage was written since create_tex scanned it (bc_verdict_current): the bytes are the ones
     // that verdict was taken from, and the scan is the costly part of a new texture.
     if (e->f.astc_bc && vk_astc_bc() == 2 && !is3d && !bc_verdict_current(e)) {
-        int alpha = astc_storage_alpha_possible(t->mem, e->t.L.size, e->f.astc_bw, e->f.astc_bh);
+        int alpha = astc_storage_alpha_possible_mt(t->mem, e->t.L.size, e->f.astc_bw, e->f.astc_bh);
         if ((alpha != 0) != (e->f.astc_bc != 2)) {
             bc_trade(e);
             perf_end(PERF_TEX, p0);

@@ -405,7 +405,9 @@ Every guest thread is a host thread. Astral Chain assumes Horizon's scheduler: t
   texture cache's default bound grows to half the device budget for them. Below 6 GB and on integrated GPUs
   (`bc1`) they are re-encoded on the GPU: the alpha scan of the raw storage (`tex_astc.c`, sound, the swizzle only
   permutes 16-byte sectors) picks BC1 for the provably opaque textures — the same colour quality as BC3 at half its
-  size — and BC3 for the rest. Both lose against RGBA8 (blockier gradients, less precise normal maps), which shows
+  size — and BC3 for the rest. The scan reads each block's header once per distinct header and only the two
+  endpoint alphas of alpha-carrying modes; a thread that waits on it (the replay making an image the background scan
+  has not reached) spreads it over the ASTC worker pool (`tex_astc_mt.c`). Both lose against RGBA8 (blockier gradients, less precise normal maps), which shows
   most on the environments' large tiled surfaces. `1` forces BC3 everywhere.
   Video memory can still run short: the RGBA8 textures outgrow a 6 GB card, or another program takes memory after the
   game started (a recorder) and the system lowers the game's budget. Two guards, both for the rest of the session.

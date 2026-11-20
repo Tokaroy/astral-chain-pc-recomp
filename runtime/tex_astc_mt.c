@@ -2,6 +2,9 @@
 // goes through astc_decode_block and lands where astc_decode_ldr puts it, so the output is the same bytes. The caller
 // takes part and returns when every row is done. One image at a time: a second caller while the pool is busy, or an
 // image under MT_MIN_BLOCKS, decodes on its own thread.
+// astc_storage_alpha_possible_mt: the alpha scan (tex_astc.c) of one storage over the same pool, in SCAN_CHUNK pieces,
+// each scanned by astc_storage_alpha_possible; the first piece that finds an alpha-carrying block stops the others.
+// Pieces start at multiples of 16 bytes, so they hold the same blocks the one-thread walk reads.
 #include <string.h>
 
 #include "host.h"
@@ -11,6 +14,8 @@
 
 #define MT_MIN_BLOCKS 1024   // below this, waking the pool costs about as much as the decode
 #define MT_MAX_THREADS 8
+#define SCAN_MIN_BYTES (256u << 10)   // below this the scan takes about as long as waking the pool
+#define SCAN_CHUNK (64u << 10)
 
 static struct {
     PlatOnce once;
@@ -25,7 +30,12 @@ static struct {
     uint8_t *out;
     uint32_t width, height, bw, bh, bx, by, chunk;
     bool srgb;
-    volatile int32_t next;                      // first block row not yet claimed
+    volatile int32_t next;                      // first block row (decode) or SCAN_CHUNK piece (scan) not yet claimed
+    // the current scan: kind 1, storage mem of bytes, found set by the piece that meets alpha
+    int kind;
+    const uint8_t *mem;
+    uint64_t bytes;
+    volatile int32_t found;
 } P = {PLAT_ONCE_INIT, .lock = PLAT_MUTEX_INIT, .work = PLAT_COND_INIT, .done = PLAT_COND_INIT};
 
 // Block rows [j0, j1) of the current image, as astc_decode_ldr's loop does them.
@@ -46,7 +56,21 @@ static void decode_rows(uint32_t j0, uint32_t j1) {
     }
 }
 
+static void claim_scan(void) {
+    for (;;) {
+        int32_t i = plat_xadd32(&P.next, 1);
+        uint64_t off = (uint64_t)(uint32_t)i * SCAN_CHUNK;
+        if (off >= P.bytes || plat_cas32(&P.found, 0, 0)) return;
+        uint64_t n = P.bytes - off < SCAN_CHUNK ? P.bytes - off : SCAN_CHUNK;
+        if (astc_storage_alpha_possible(P.mem + off, n, P.bw, P.bh)) plat_xchg32(&P.found, 1);
+    }
+}
+
 static void claim_rows(void) {
+    if (P.kind) {
+        claim_scan();
+        return;
+    }
     for (;;) {
         int32_t j0 = plat_xadd32(&P.next, (int32_t)P.chunk);
         if ((uint32_t)j0 >= P.by) return;
@@ -98,7 +122,7 @@ void astc_decode_ldr_mt(const uint8_t *blocks, uint32_t width, uint32_t height, 
     }
     plat_mutex_lock(&P.lock);
     P.blocks = blocks, P.out = rgba_out, P.width = width, P.height = height, P.bw = bw, P.bh = bh, P.bx = bx, P.by = by;
-    P.srgb = srgb;
+    P.srgb = srgb, P.kind = 0;
     uint32_t parts = (uint32_t)(P.threads + 1) * 4;   // a few chunks per thread evens out uneven blocks
     P.chunk = by / parts ? by / parts : 1;
     P.next = 0;
@@ -111,4 +135,24 @@ void astc_decode_ldr_mt(const uint8_t *blocks, uint32_t width, uint32_t height, 
     while (P.active) plat_cond_wait(&P.done, &P.lock);
     plat_mutex_unlock(&P.lock);
     plat_mutex_unlock(&P.busy);
+}
+
+bool astc_storage_alpha_possible_mt(const uint8_t *mem, uint64_t bytes, uint32_t bw, uint32_t bh) {
+    if (bytes < SCAN_MIN_BYTES || bw < 4 || bh < 4 || bw > 12 || bh > 12)
+        return astc_storage_alpha_possible(mem, bytes, bw, bh);
+    plat_once(&P.once, pool_init, NULL);
+    if (!P.threads || !plat_mutex_trylock(&P.busy)) return astc_storage_alpha_possible(mem, bytes, bw, bh);
+    plat_mutex_lock(&P.lock);
+    P.kind = 1, P.mem = mem, P.bytes = bytes, P.bw = bw, P.bh = bh, P.found = 0, P.next = 0;
+    P.active = P.threads;
+    P.gen++;
+    plat_cond_broadcast(&P.work);
+    plat_mutex_unlock(&P.lock);
+    claim_scan();
+    plat_mutex_lock(&P.lock);
+    while (P.active) plat_cond_wait(&P.done, &P.lock);
+    plat_mutex_unlock(&P.lock);
+    bool found = plat_cas32(&P.found, 0, 0) != 0;
+    plat_mutex_unlock(&P.busy);
+    return found;
 }

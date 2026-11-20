@@ -533,37 +533,40 @@ void astc_decode_ldr(const uint8_t *blocks, uint32_t width, uint32_t height, uin
 //   - a void extent is a constant whose alpha is the top byte of its UNORM16 alpha, block[15];
 //   - the alpha-free LDR modes (L, RGB, RGB scale) put both endpoint alphas at 255, and the HDR modes decode
 //     their partition to magenta: opaque without looking at the values;
-//   - an alpha-carrying mode (LA, RGBA, RGB scale + two alphas) decodes its endpoint values: a texel's alpha
-//     interpolates the two endpoint alphas, so it can differ from 255 only when an endpoint alpha does.
+//   - an alpha-carrying mode (LA, RGBA, RGB scale + two alphas) decodes its two endpoint alpha values only
+//     (unpack_endpoints's arithmetic on them): a texel's alpha interpolates the two endpoint alphas, so it can
+//     differ from 255 only when an endpoint alpha does. The colour values do not reach the alphas: blue
+//     contraction swaps the endpoints, which leaves the pair the same.
 // A block whose footprint this decoder cannot take (not 4..12 x 4..12) is reported alpha-carrying: the
 // caller then keeps the texture in BC3.
-bool astc_block_alpha_possible(const uint8_t block[16], uint32_t bw, uint32_t bh) {
-    if (bw < 4 || bh < 4 || bw > 12 || bh > 12) return true;
-    Bits128 b = {load64(block), load64(block + 8)};
-    uint32_t mode = (uint32_t)(b.lo & 0x7FF);
+//
+// The header part (block mode, partitions, endpoint modes, colour quantization) is an AlphaPlan; the storage
+// scan keeps the plans of the headers it met (most blocks of a texture share a few), so the per-block work is
+// the plan lookup and, for alpha-carrying modes, two ISE values.
+typedef struct {
+    uint8_t check;      // 0: opaque from the header alone; else the partitions to check (1..4)
+    uint8_t cq, pos;    // colour quantization, first colour value's bit
+    uint8_t ccount;     // colour values in all
+    uint8_t cem[4];     // per partition to check: its endpoint mode
+    uint8_t at[4];      // and the index of its first alpha value
+} AlphaPlan;
 
-    if ((mode & 0x1FF) == 0x1FC) {  // void extent
-        if (mode & 0x200) return false;           // HDR constant: error in LDR -> magenta
-        if ((b.lo >> 10 & 3) != 3) return false;  // reserved bits -> magenta
-        uint32_t s0 = rbits(&b, 12, 13), s1 = rbits(&b, 25, 13);
-        uint32_t t0 = rbits(&b, 38, 13), t1 = rbits(&b, 51, 13);
-        bool all_ones = s0 == 0x1FFF && s1 == 0x1FFF && t0 == 0x1FFF && t1 == 0x1FFF;
-        if ((s0 >= s1 || t0 >= t1) && !all_ones) return false;
-        return block[15] != 0xFF;
-    }
+static bool alpha_cem(int cem) { return cem == 4 || cem == 5 || cem == 10 || cem == 12 || cem == 13; }
 
-    BlockMode bm;
-    if (!block_mode_2d(mode, bw, bh, &bm)) return false;  // error -> magenta
-    int pcount = (int)(b.lo >> 11 & 3) + 1;
-    if (bm.dual && pcount == 4) return false;
+// The plan of a block that is not a void extent; wbits / dual from block_mode_2d, valid false for an error mode.
+static void alpha_plan(const Bits128 *b, bool valid, int wbits, int dual, AlphaPlan *pl) {
+    pl->check = 0;
+    if (!valid) return;   // error -> magenta
+    int pcount = (int)(b->lo >> 11 & 3) + 1;
+    if (dual && pcount == 4) return;
 
     int cem[4], high = 0;
     if (pcount == 1) {
-        cem[0] = (int)(b.lo >> 13 & 0xF);
+        cem[0] = (int)(b->lo >> 13 & 0xF);
     } else {
         high = 3 * pcount - 4;
-        int below = 128 - bm.wbits - high;
-        uint32_t enc = (uint32_t)(b.lo >> 23 & 0x3F) | rbits(&b, below, high) << 6;
+        int below = 128 - wbits - high;
+        uint32_t enc = (uint32_t)(b->lo >> 23 & 0x3F) | rbits(b, below, high) << 6;
         uint32_t base = enc & 3;
         if (base == 0) {
             for (int i = 0; i < pcount; i++) cem[i] = (int)(enc >> 2 & 0xF);
@@ -576,35 +579,105 @@ bool astc_block_alpha_possible(const uint8_t block[16], uint32_t bw, uint32_t bh
     }
     int ccount = 0;
     for (int i = 0; i < pcount; i++) ccount += ((cem[i] >> 2) + 1) * 2;
-    if (ccount > 18) return false;
-    int cbits = (pcount == 1 ? 111 : 99) - bm.wbits - high - (bm.dual ? 2 : 0);
+    if (ccount > 18) return;
+    int cbits = (pcount == 1 ? 111 : 99) - wbits - high - (dual ? 2 : 0);
     if (cbits < 0) cbits = 0;
     int cq = -1;
     for (int q = 20; q >= 0; q--) {
         if (ise_bitcount(ccount, q) <= cbits) { cq = q; break; }
     }
-    if (cq < QUANT_6) return false;
+    if (cq < QUANT_6) return;
 
-    int carries = 0;   // partitions whose endpoints can hold alpha
-    for (int i = 0; i < pcount; i++) carries += cem[i] == 4 || cem[i] == 5 || cem[i] == 10 || cem[i] == 12 || cem[i] == 13;
-    if (!carries) return false;
-
-    uint8_t cv[18];
-    ise_decode(&b, pcount == 1 ? 17 : 29, ccount, cq, cv);
-    if (cq != QUANT_256) {
-        const uint8_t *ct = cunq_data + cunq_off[cq - QUANT_6];
-        for (int i = 0; i < ccount; i++) cv[i] = ct[cv[i]];
-    }
-    int e0[4], e1[4];
+    int n = 0;
     for (int p = 0, k = 0; p < pcount; p++) {
-        int n = ((cem[p] >> 2) + 1) * 2;
-        // unpack_endpoints returns false for an HDR mode: that partition decodes to magenta, alpha 255
-        if ((cem[p] == 4 || cem[p] == 5 || cem[p] == 10 || cem[p] == 12 || cem[p] == 13) &&
-            unpack_endpoints(cem[p], cv + k, e0, e1) && (e0[3] != 255 || e1[3] != 255))
-            return true;
-        k += n;
+        // unpack_endpoints: LA (4, 5) alphas are values 2 and 3, RGB scale + two alphas (10) 4 and 5,
+        // RGBA (12, 13) 6 and 7
+        if (alpha_cem(cem[p])) pl->cem[n] = (uint8_t)cem[p], pl->at[n++] = (uint8_t)(k + (cem[p] == 10 ? 4 : cem[p] >= 12 ? 6 : 2));
+        k += ((cem[p] >> 2) + 1) * 2;
+    }
+    pl->check = (uint8_t)n, pl->cq = (uint8_t)cq, pl->pos = (uint8_t)(pcount == 1 ? 17 : 29), pl->ccount = (uint8_t)ccount;
+}
+
+// The raw value idx of the count-value ISE sequence at bit pos: ise_decode of the one group that holds it.
+static uint32_t ise_value_at(const Bits128 *b, int pos, int count, int q, int idx) {
+    int nb = q_bits[q];
+    if (q_trits[q]) {
+        static const uint8_t tb[5] = {2, 2, 1, 2, 1}, ts[5] = {0, 2, 4, 5, 7};
+        int g = idx / 5 * 5, j = idx - g, m = 0, t[5];
+        pos += g / 5 * (5 * nb + 8);
+        uint32_t T = 0;
+        for (int k = 0; k < 5 && g + k < count; k++) {
+            if (k == j) m = (int)rbits(b, pos, nb);
+            pos += nb;
+            T |= rbits(b, pos, tb[k]) << ts[k]; pos += tb[k];
+        }
+        trits_of(T, t);
+        return (uint32_t)t[j] << nb | (uint32_t)m;
+    }
+    if (q_quints[q]) {
+        static const uint8_t qb[3] = {3, 2, 2}, qs[3] = {0, 3, 5};
+        int g = idx / 3 * 3, j = idx - g, m = 0, v[3];
+        pos += g / 3 * (3 * nb + 7);
+        uint32_t Q = 0;
+        for (int k = 0; k < 3 && g + k < count; k++) {
+            if (k == j) m = (int)rbits(b, pos, nb);
+            pos += nb;
+            Q |= rbits(b, pos, qb[k]) << qs[k]; pos += qb[k];
+        }
+        quints_of(Q, v);
+        return (uint32_t)v[j] << nb | (uint32_t)m;
+    }
+    return rbits(b, pos + idx * nb, nb);
+}
+
+// Whether a partition the plan checks has an endpoint alpha other than 255.
+static bool alpha_plan_hit(const Bits128 *b, const AlphaPlan *pl) {
+    const uint8_t *ct = pl->cq != QUANT_256 ? cunq_data + cunq_off[pl->cq - QUANT_6] : NULL;
+    for (int i = 0; i < pl->check; i++) {
+        int v0 = (int)ise_value_at(b, pl->pos, pl->ccount, pl->cq, pl->at[i]);
+        int v1 = (int)ise_value_at(b, pl->pos, pl->ccount, pl->cq, pl->at[i] + 1);
+        if (ct) v0 = ct[v0], v1 = ct[v1];
+        int a0 = v0, a1 = v1;
+        if (pl->cem[i] == 5) {   // LA delta
+            a0 |= (v1 & 0x80) << 1;
+            a1 &= 0x7F;
+            if (a1 & 0x40) a1 -= 0x80;
+            a0 >>= 1; a1 >>= 1;
+            a1 = clamp255(a1 + a0);
+        } else if (pl->cem[i] == 13) {   // RGBA base + delta
+            a0 = v0 >> 1 | (v1 & 0x80);
+            a1 = v1 >> 1 & 0x3F;
+            if (a1 & 0x20) a1 -= 0x40;
+            a1 = clamp255(a1 + a0);
+            a0 = clamp255(a0);
+        }
+        if (a0 != 255 || a1 != 255) return true;
     }
     return false;
+}
+
+// A void extent's verdict (the caller has checked (mode & 0x1FF) == 0x1FC).
+static bool alpha_void_extent(const Bits128 *b, const uint8_t block[16]) {
+    uint32_t mode = (uint32_t)(b->lo & 0x7FF);
+    if (mode & 0x200) return false;            // HDR constant: error in LDR -> magenta
+    if ((b->lo >> 10 & 3) != 3) return false;  // reserved bits -> magenta
+    uint32_t s0 = rbits(b, 12, 13), s1 = rbits(b, 25, 13);
+    uint32_t t0 = rbits(b, 38, 13), t1 = rbits(b, 51, 13);
+    bool all_ones = s0 == 0x1FFF && s1 == 0x1FFF && t0 == 0x1FFF && t1 == 0x1FFF;
+    if ((s0 >= s1 || t0 >= t1) && !all_ones) return false;
+    return block[15] != 0xFF;
+}
+
+bool astc_block_alpha_possible(const uint8_t block[16], uint32_t bw, uint32_t bh) {
+    if (bw < 4 || bh < 4 || bw > 12 || bh > 12) return true;
+    Bits128 b = {load64(block), load64(block + 8)};
+    uint32_t mode = (uint32_t)(b.lo & 0x7FF);
+    if ((mode & 0x1FF) == 0x1FC) return alpha_void_extent(&b, block);
+    BlockMode bm;
+    AlphaPlan pl;
+    bool valid = block_mode_2d(mode, bw, bh, &bm);
+    alpha_plan(&b, valid, bm.wbits, bm.dual, &pl);
+    return pl.check && alpha_plan_hit(&b, &pl);
 }
 
 // Whether any 16-byte unit of a raw ASTC storage can hold an alpha-carrying block: the answer to "can this
@@ -615,8 +688,43 @@ bool astc_block_alpha_possible(const uint8_t block[16], uint32_t bw, uint32_t bh
 // a block, which can only make the answer yes (the texture stays BC3), never yes-with-alpha-hidden, so the
 // verdict is sound. The texture's own footprint decides which block modes are valid, as in the decode.
 // 3D textures are the caller's to exclude: their block modes are 3D and this walk cannot judge them.
+// Per block it does what astc_block_alpha_possible does, with the block mode and the plan of each header
+// kept: modes in a 2048-entry table, plans in a small direct-mapped cache keyed by every header bit the plan
+// reads (mode and partition count; the endpoint mode bits of one partition, or of several with the bits
+// they borrow from below the weights).
+enum { PLAN_SLOTS = 256 };
 bool astc_storage_alpha_possible(const uint8_t *mem, uint64_t bytes, uint32_t bw, uint32_t bh) {
-    for (uint64_t off = 0; off + 16 <= bytes; off += 16)
-        if (astc_block_alpha_possible(mem + off, bw, bh)) return true;
+    if (bw < 4 || bh < 4 || bw > 12 || bh > 12) return bytes >= 16;
+    uint8_t mw[2048];   // 0 not parsed yet, 1 error mode, else 2 + wbits | dual << 7 (wbits <= 96)
+    memset(mw, 0, sizeof mw);
+    static _Thread_local struct { uint64_t key; AlphaPlan p; } cache[PLAN_SLOTS];
+    for (int i = 0; i < PLAN_SLOTS; i++) cache[i].key = ~0ull;
+    for (uint64_t off = 0; off + 16 <= bytes; off += 16) {
+        const uint8_t *blk = mem + off;
+        Bits128 b = {load64(blk), load64(blk + 8)};
+        uint32_t mode = (uint32_t)(b.lo & 0x7FF);
+        if ((mode & 0x1FF) == 0x1FC) {
+            if (alpha_void_extent(&b, blk)) return true;
+            continue;
+        }
+        uint8_t m = mw[mode];
+        if (!m) {
+            BlockMode bm;
+            m = block_mode_2d(mode, bw, bh, &bm) ? (uint8_t)(2 + bm.wbits | bm.dual << 7) : 1;
+            mw[mode] = m;
+        }
+        if (m == 1) continue;   // error -> magenta
+        int wbits = (m & 0x7F) - 2, dual = m >> 7, pcount = (int)(b.lo >> 11 & 3) + 1;
+        uint64_t key = b.lo & 0x1FFF;   // mode, partition count
+        if (pcount == 1) key |= (b.lo >> 13 & 0xF) << 13;
+        else key |= (b.lo >> 23 & 0x3F) << 13 | (uint64_t)rbits(&b, 128 - wbits - (3 * pcount - 4), 3 * pcount - 4) << 19;
+        uint32_t slot = (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 56) & (PLAN_SLOTS - 1);
+        if (cache[slot].key != key) {
+            alpha_plan(&b, true, wbits, dual, &cache[slot].p);
+            cache[slot].key = key;
+        }
+        const AlphaPlan *pl = &cache[slot].p;
+        if (pl->check && alpha_plan_hit(&b, pl)) return true;
+    }
     return false;
 }
