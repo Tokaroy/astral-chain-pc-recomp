@@ -74,7 +74,7 @@ again: it is rebuilt from the 1.0.1 update.
    `v2` one), a Vulkan 1.3 GPU exists. Each failure is one clear message.
    `main.npdm` is not compared: it is the process's metadata, dumps of the same build carry different ones (repacked
    NSPs, different dumpers), and the game checks the fields it uses at start (`runtime/boot.c` `check_npdm`); a
-   differing one is a warning.
+   differing one is only noted in the install log, as the window would alarm the player over nothing.
    A version mismatch is not a dead end: the window offers **Continue anyway**, which runs the same setup with the
    check reported as a warning (`--accept-unknown-version` on the command line). The game may then not run or crash;
    the player decides.

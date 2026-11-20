@@ -86,7 +86,6 @@
  "prepare.pack_failed": "Packing the shader cache failed (exit code {code}). Details: {log}",
  "cleanup.ini_failed": "astralchain.ini cannot be written: {detail}",
 
- "warn.npdm_differs": "main.npdm differs from the reference {version} dump; only the code modules are used.",
  "warn.data_accepted": "The game data differs from the reference dump (size {size}); carrying on because you asked. The game may not run.",
  "warn.version_accepted": "The game code differs from the reference dump ({modules}); carrying on because you asked. The game may not run.",
  "warn.update_accepted": "The update code differs from the reference {version} dump ({modules}); carrying on because you asked. The game may not run.",

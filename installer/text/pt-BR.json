@@ -88,7 +88,6 @@
 
  "warn.cheats_skipped": "Não foi possível compilar os cheats da pasta de mods que alteram o código do jogo; o jogo é instalado sem eles. Detalhes: {log}",
  "warn.exefs_skipped": "Não foi possível compilar os patches ExeFS dos mods (.ips, .pchtxt); o jogo é instalado sem eles. Detalhes: {log}",
- "warn.npdm_differs": "O main.npdm difere do dump de referência da versão {version}; só os módulos de código são usados.",
  "warn.data_accepted": "Os dados do jogo diferem do dump de referência (tamanho {size}); continuando porque você pediu. O jogo pode não rodar.",
  "warn.version_accepted": "O código do jogo difere do dump de referência ({modules}); continuando porque você pediu. O jogo pode não rodar.",
  "warn.update_accepted": "O código da atualização difere do dump de referência {version} ({modules}); continuando porque você pediu. O jogo pode não rodar.",

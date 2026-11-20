@@ -112,8 +112,8 @@ class ModelTest(unittest.TestCase):
         self.assertIn('C:\\t', m.need_text(Catalog('en')))
 
     def test_warnings_collect(self):
-        m = fold(START, {'type': 'warning', 'id': 'warn.npdm_differs', 'params': {'version': '1.0.1'}})
-        self.assertEqual(m.warnings, [('warn.npdm_differs', {'version': '1.0.1'})])
+        m = fold(START, {'type': 'warning', 'id': 'warn.shaders_skipped', 'params': {'count': 2, 'log': 'x.log'}})
+        self.assertEqual(m.warnings, [('warn.shaders_skipped', {'count': 2, 'log': 'x.log'})])
 
     def test_finish_without_end_event(self):
         m = fold(START, {'type': 'step', 'step': 'lift', 'state': 'started'})
@@ -157,7 +157,7 @@ class RunStatesTest(unittest.TestCase):
     FAILED = [START, {'type': 'step', 'step': 'check', 'state': 'started'}, {'type': 'step', 'step': 'check', 'state': 'done'},
               {'type': 'step', 'step': 'extract', 'state': 'started'},
               {'type': 'error', 'id': 'extract.romfs_mismatch', 'step': 'extract', 'params': {}},
-              {'type': 'warning', 'id': 'warn.npdm_differs', 'params': {'version': '1.0.1'}},
+              {'type': 'warning', 'id': 'warn.shaders_skipped', 'params': {'count': 2, 'log': 'x.log'}},
               {'type': 'end', 'result': 'failed', 'seconds': 1}]
 
     def test_ok_run_has_only_done_and_skipped_steps(self):

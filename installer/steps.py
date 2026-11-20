@@ -505,8 +505,11 @@ class Check(Step):
             if not accept:
                 raise InstallError('check.base_wrong_version', modules=', '.join(problems))
             ctx.reporter.warning('warn.version_accepted', modules=', '.join(problems))
+        # main.npdm differs between dumps of the same build (dumpers, repacked NSPs); the window does not show it, as
+        # nothing is wrong: the base's is never used, and the game checks the update's fields at start (boot.c).
         if extract.sha256(work / 'base' / 'exefs' / 'main.npdm') != base_expected['exefs_sha256']['main.npdm']:
-            ctx.reporter.warning('warn.npdm_differs', version=BASE_VERSION)
+            ctx.reporter.log(f'check: main.npdm differs from the reference {BASE_VERSION} dump; only the code modules '
+                             f'are compared')
 
         versions = load_expected()
         try:
@@ -531,7 +534,8 @@ class Check(Step):
             ctx.reporter.warning('warn.update_accepted', version=found['display_version'],
                                  modules=', '.join(problems))
         if extract.sha256(work / 'update' / 'exefs' / 'main.npdm') != found['exefs_sha256']['main.npdm']:
-            ctx.reporter.warning('warn.npdm_differs', version=found['display_version'])
+            ctx.reporter.log(f'check: main.npdm differs from the reference {found["display_version"]} dump; only the '
+                             f'code modules are compared')
 
         version = found['display_version']
         if version != game_version(ctx):   # another update than the recorded one: every step builds again from it
@@ -611,7 +615,8 @@ class Extract(Step):
                 raise InstallError('extract.exefs_mismatch', version=game_version(ctx), modules=', '.join(problems))
             # The check already warned about the same files; the copy here is what the check read.
         if extract.sha256(dest / 'exefs' / 'main.npdm') != expected['exefs_sha256']['main.npdm']:
-            rep.warning('warn.npdm_differs', version=game_version(ctx))
+            rep.log(f'extract: main.npdm differs from the reference {game_version(ctx)} dump; the game checks the '
+                    f'fields it uses at start')
 
         romfs = dest / 'romfs'
         if self.id in ctx.forced:
