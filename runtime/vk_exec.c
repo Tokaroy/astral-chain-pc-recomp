@@ -347,9 +347,15 @@ static void resolve_target(const tex_t *t, const view_t *v, int has_v, int depth
             layers = 1;
         }
     } else if (!depth_slot && has_v && v->set_format && v->format != t->d.format) {
-        // an image made with a format list (vk_texture.c target_compression) takes views of the listed formats only
-        if (view_format(t, v, 0, &fmt) && (!img->format_list || fmt == img->format || fmt == img->view_twin))
-            nvn_fmt = v->format;
+        int ok = view_format(t, v, 0, &fmt);
+        // an image made with a format list (vk_texture.c target_compression) takes views of the listed formats only:
+        // for another one it is made again without a list, before the pass draws into it
+        if (ok && img->format_list && fmt != img->format && fmt != img->view_twin) {
+            const VkTexImage *made = vk_texture_unlist(t);
+            if (made) img = made;
+            else ok = 0;
+        }
+        if (ok) nvn_fmt = v->format;
         else fmt = img->format, warn_once(W_VIEW_FORMAT, "render target view format %#x of a format %#x texture: "
                                           "texture format used", v->format, t->d.format);
     }
@@ -1361,6 +1367,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     split_draws = part_start = 0;
     part_t0 = kern_now_ns();
     x_here = 1;
+    vk_texture_unlist_pending();   // images made again without a format list in the last replay, and those to make
     if (n) vk_mem_mirror_begin(), vk_usnap_begin(handles, n, fence);
     if (n && vk_gpuprof_on()) vk_gpuprof_mark(ex, 0, 0);
     for (int i = 0; i < n; i++) {

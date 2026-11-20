@@ -9,7 +9,12 @@ set -u
 # built in ~/src/mesa-deck from Mesa 26.2.6. MESA_DECK_ICD overrides the path; unset it to the empty string to use the system driver.
 MESA_DECK_ICD=${MESA_DECK_ICD-$HOME/src/mesa-deck/share/vulkan/icd.d/radeon_icd.x86_64.json}
 if [[ -n $MESA_DECK_ICD ]]; then
-    if [[ -f $MESA_DECK_ICD ]]; then export VK_DRIVER_FILES=$MESA_DECK_ICD; echo "Vulkan driver: $MESA_DECK_ICD" >&2
+    if [[ -f $MESA_DECK_ICD ]]; then
+        export VK_DRIVER_FILES=$MESA_DECK_ICD; echo "Vulkan driver: $MESA_DECK_ICD" >&2
+        # The game gives its colour targets a format list by default on RDNA 2 under RADV only, which it tells from the device name
+        # (runtime/vk_caps.c). This driver still reports PHOENIX, so the run asks for the list as a Deck gets it;
+        # AC_TARGET_COMPRESSION=0 in the environment compares without.
+        export AC_TARGET_COMPRESSION=${AC_TARGET_COMPRESSION-1}
     else echo "warning: $MESA_DECK_ICD not found, using the system driver" >&2; fi
 fi
 

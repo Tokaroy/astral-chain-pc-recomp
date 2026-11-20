@@ -43,7 +43,8 @@
 #define NVN_STAGE_CS 5
 #define ONESHOT_WAIT_MS 30000u   // prepare_draw: how long a one-shot draw waits for its pipeline before it is skipped
 
-enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_COUNT };
+enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_VIEW_LIST,
+       W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
     static volatile int32_t seen[W_COUNT];
@@ -521,6 +522,13 @@ static int sampled_view_format(const VkTexImage *img, const view_t *v, VkFormat 
     if (!tex_vk_format(v->format, &b) || b.vk != b.ideal || b.depth || b.stencil || b.expand_rgb || b.chan[0]) return 0;
     int bpb = nvn_fmt_bpb(nf, &bw, &bh), vbpb = nvn_fmt_bpb(v->format, &vbw, &vbh);
     if (!bpb || bpb != vbpb || bw != 1 || bh != 1 || vbw != 1 || vbh != 1 || b.vk == img->format) return 0;
+    // an image made with a format list (vk_texture.c target_compression) takes views of the listed formats only: this
+    // draw samples the texture's format, and the image is made again without a list for the next submission
+    if (img->format_list && b.vk != img->view_twin) {
+        vk_texture_unlist_later(img);
+        return warn_once(W_VIEW_LIST, "sampled view format %#x of a format %#x target made with a format list: texture "
+                         "format used until the next submission", v->format, nf), 0;
+    }
     VkFormatProperties fp;
     vkGetPhysicalDeviceFormatProperties(vk_ctx()->phys, b.vk, &fp);
     if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) return 0;

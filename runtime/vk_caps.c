@@ -44,6 +44,14 @@ void vk_caps_driver(VkPhysicalDevice p) {
     // AMD split RDNA 1 and 2 off into a driver branch of their own; its driverInfo reads
     // "26.10.1 (AMD proprietary shader compiler)" where the RDNA 3 and 4 driver names LLPC.
     vk_caps.amd_sc = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY && strstr(drv.driverInfo, "shader compiler");
+    // RADV names the chip family in the device name, "AMD Custom GPU 0405 (RADV VANGOGH)": these are its GFX10.3 ones
+    // (Mesa ac_gpu_info.c), the RX 6000 cards, the Steam Deck and the Ryzen 6000 and 7000 integrated GPUs of that
+    // generation.
+    static const char *const rdna2[] = {"NAVI21", "NAVI22", "NAVI23", "NAVI24", "VANGOGH", "REMBRANDT", "RAPHAEL_MENDOCINO"};
+    vk_caps.radv_rdna2 = 0;
+    if (drv.driverID == VK_DRIVER_ID_MESA_RADV)
+        for (size_t i = 0; i < sizeof rdna2 / sizeof *rdna2; i++)
+            if (strstr(p2.properties.deviceName, rdna2[i])) vk_caps.radv_rdna2 = 1;
 }
 
 // AC_GPL=0/1 forces graphics pipeline libraries off or on. Default off on AMD's RDNA 1/2 driver branch: every boot

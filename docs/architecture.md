@@ -425,6 +425,12 @@ Every guest thread is a host thread. Astral Chain assumes Horizon's scheduler: t
   1800 logs the process and system commit and, per heap, VMA's blocks beside the driver's usage; crash reports print
   the commit too.
   --probe-astc holds both encoders and the scan to PSNR and exactness bounds. The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
+- Colour render targets are made `MUTABLE_FORMAT`, for the game's views in another format. Below GFX11 RADV turns
+  colour compression off for such an image unless it carries a format list, so under RADV on an RDNA 2 GPU (the
+  Steam Deck, RX 6000 cards, Ryzen 6000/7000 integrated GPUs) each one gets a list of its own format and its sRGB or
+  UNORM twin (`AC_TARGET_COMPRESSION`, `vk_texture.c` `target_compression`): -3 to -4% GPU time per frame in Harmony
+  Square in the Steam Deck profile, measured on a Z1 Extreme whose Mesa applies the GFX10.3 rule (`tools/deck_power.sh`
+  loads it). A view in a format outside the list makes the target again without one, with its content (`unlist`).
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).
 - Allocation: Vulkan Memory Allocator. Debugging: Vulkan validation layers, per-pass frame dumps (`AC_DUMP`, or F12 with `AC_DUMP_KEY=1`; `vk_dump.c`) and a flight recorder (`AC_FLIGHT`). RenderDoc cannot capture, because it hides `VK_EXT_external_memory_host` from the application.
 

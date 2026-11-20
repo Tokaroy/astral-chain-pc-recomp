@@ -64,9 +64,11 @@ typedef struct {
     int gpl;                           // VK_EXT_graphics_pipeline_library enabled with fast linking (AC_GPL=0: off)
     int amd;                           // an AMD GPU (vendor 0x1002), any driver
     int amd_sc;                        // AMD's Windows driver branch for RDNA 1 and 2 ("AMD proprietary shader compiler")
+    int radv_rdna2;                    // RADV on an RDNA 2 GPU (GFX10.3): colour targets get a format list (vk_texture.c
+                                       // target_compression)
 } VkCaps;
 extern VkCaps vk_caps;
-void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc
+void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc, radv_rdna2
 void vk_caps_features(VkPhysicalDeviceFeatures *f);   // before vkCreateDevice (AC_VK_NO_FLOAT64 clears shaderFloat64)
 // Before vkCreateDevice, with the driver's graphics pipeline library feature and properties: sets vk_caps.gpl,
 // 1 = enable the extensions (VK_KHR_pipeline_library, VK_EXT_graphics_pipeline_library) and the feature.
@@ -434,7 +436,8 @@ typedef struct {
     uint8_t skip;                  // AC_TEX_MIP_SKIP: the game's levels below this one are not in the image (vk_texture.c
                                    // mip_skip_of). Image level i holds the game's level i + skip; width, height and
                                    // levels above are the image's.
-    uint8_t format_list;           // made with a format list (AC_TARGET_COMPRESSION): views take `format` or view_twin
+    uint8_t format_list;           // made with a format list (AC_TARGET_COMPRESSION): views take `format` or view_twin;
+                                   // a view in another format makes it again without one (vk_texture_unlist)
     VkFormat view_twin;            // format_list: the listed sRGB or UNORM twin of `format`, or VK_FORMAT_UNDEFINED
     uint64_t mem_size;             // bound: the bytes of pool memory from addr the image is bound over (its memory
                                    // requirements); images over overlapping bytes alias each other
@@ -454,6 +457,13 @@ void vk_hdr_present_source(const VkTexImage *win, VkImage *scene, VkFormat *form
 void vk_hdr_set_scene(VkImage scene, VkFormat fmt);
 void vk_hdr_image_gone(VkImage image);
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
+// A target made with a format list (VkTexImage.format_list) that a view asks in a format outside it is made again
+// without one, with its content. vk_texture_unlist: now, before a pass renders into it (replay thread; the image
+// pointers of t held before are gone); returns the new image, NULL when it could not be made. vk_texture_unlist_later
+// (texture lock held): when the next submission's replay starts, where vk_exec_record calls vk_texture_unlist_pending.
+const VkTexImage *vk_texture_unlist(const tex_t *t);
+void vk_texture_unlist_later(const VkTexImage *img);
+void vk_texture_unlist_pending(void);
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).
 const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view);
 // The replay looks up many slots per draw: it takes the texture lock once around them (vk_texture_lock) and uses the
