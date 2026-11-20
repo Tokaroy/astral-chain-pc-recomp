@@ -1398,6 +1398,11 @@ void *plat_lib_open(const char *name) {
 }
 
 void *plat_lib_sym(void *lib, const char *name) { return lib ? (void *)GetProcAddress((HMODULE)lib, name) : NULL; }
+const char *plat_lib_error(void) {
+    static _Thread_local char s[32];
+    snprintf(s, sizeof s, "error %lu", (unsigned long)GetLastError());
+    return s;
+}
 
 // ---- machine load: GetSystemTimes for the CPU, PDH (pdh.dll, loaded on first use) for the thermal zones and the GPU
 // engine and adapter memory counters that Task Manager reads.

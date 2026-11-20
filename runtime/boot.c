@@ -313,6 +313,7 @@ static void settle_resolution(void) {
     uint64_t limit = vk_mem_vram_limit();   // AC_VRAM_LIMIT_MIB: the card size the port acts on
     if (limit && big > limit) big = limit;
     res_settle(vk_dlaa_upscaler_ok(), (unsigned)(big >> 20));
+    vk_dlaa_warm();   // the upscaler's own set-up for these sizes now, not at the first frame after a load
 }
 
 void rt_boot(void) {

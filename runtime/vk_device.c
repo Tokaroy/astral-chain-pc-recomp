@@ -234,8 +234,11 @@ typedef struct {
     VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mut;   // XeSS (vk_xess.c) only
     VkPhysicalDevicePresentIdFeaturesKHR pid;               // Reflex (vk_lowlat.c) only
     VkPhysicalDeviceAntiLagFeaturesAMD antilag;             // Anti-Lag 2 (vk_lowlat.c) only
-    VkPhysicalDeviceDescriptorBufferFeaturesEXT dbuf;       // FSR 4 (vk_fsr4.c) only
     VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR csd;   // FSR 4 (vk_fsr4.c) only
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop;         // FSR 4's FP8 model only
+#ifdef VK_EXT_shader_float8
+    VkPhysicalDeviceShaderFloat8FeaturesEXT f8;                // FSR 4's FP8 model only
+#endif
 } FeatureChain;
 
 static int create_device(void) {
@@ -284,21 +287,27 @@ static int create_device(void) {
     // XeSS's, when its whole list and every feature it asks for are there; its one non-core feature structure is chained
     if (vk_xess_device_exts(g_vk.instance, g_vk.phys, ep, ne, ext, &n_ext, 72))
         CHAIN(mut, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT);
-    // FSR 4 (vk_fsr4.c), only with upscaling = fsr4: AMD's shaders take derivatives in compute shaders, in AMD's own
-    // library (Windows) too: without the extension the validation layer reports SPV_KHR_compute_shader_derivatives and
-    // ComputeDerivativeGroupLinearKHR at vkCreateShaderModule when the library makes its context (an Arc 140T, its FSR
-    // 3.1.6 upscaler). Run by a Linux library on RADV they also bind through descriptor buffers, which AMD's library
-    // does not: its Vulkan back end (the FSR SDK's backend/vk/ffx_vk.cpp) binds through descriptor sets, and the same
-    // run reports nothing without the extension, so it is enabled off Windows only. The rest they use (8/16-bit
-    // arithmetic, integer dot products, subgroup size control, buffer device addresses) is Vulkan 1.1-1.3 core and
-    // enabled with it below.
-    int has_dbuf = 0, has_csd = 0;
+    // FSR 4 (vk_fsr4.c), only with upscaling = fsr4: the shaders of AMD's library (the same DLLs on Windows and, through
+    // ffx-vk-linux, on Linux) take derivatives in compute shaders: without the extension the validation layer reports
+    // SPV_KHR_compute_shader_derivatives and ComputeDerivativeGroupLinearKHR at vkCreateShaderModule when the library
+    // makes its context (an Arc 140T, its FSR 3.1.6 upscaler). The rest they use (8/16-bit arithmetic, integer dot
+    // products, subgroup size control, buffer device addresses) is Vulkan 1.1-1.3 core and enabled with it below. The
+    // library binds through descriptor sets (the FSR SDK's backend/vk/ffx_vk.cpp). Its FP8 model, the one for the
+    // Radeon RX 9000 series, multiplies 8-bit float matrices: the upscaler DLL names VK_KHR_cooperative_matrix and
+    // VK_EXT_shader_float8, which a shader may use only on a device that enabled them, so both are enabled where the
+    // driver has them (a Ryzen Z1 Extreme's RADV has the first; no RX 9000 was at hand to run that model).
+    int has_csd = 0, has_coop = 0, has_f8 = 0;
     if (vk_fsr4_wanted()) {
-#ifndef _WIN32
-        if (has_ext(ep, ne, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME)) {
-            has_dbuf = 1;
-            ext[n_ext++] = VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME;
-            CHAIN(dbuf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT);
+        if (has_ext(ep, ne, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)) {
+            has_coop = 1;
+            ext[n_ext++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
+            CHAIN(coop, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR);
+        }
+#ifdef VK_EXT_shader_float8
+        if (has_ext(ep, ne, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME)) {
+            has_f8 = 1;
+            ext[n_ext++] = VK_EXT_SHADER_FLOAT8_EXTENSION_NAME;
+            CHAIN(f8, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT);
         }
 #endif
         const char *csd_ext = has_ext(ep, ne, VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME)
@@ -373,15 +382,13 @@ static int create_device(void) {
     if (g_vk.has_nv_low_latency2 && !c->pid.presentId) g_vk.has_nv_low_latency2 = 0;   // the extension alone is not enough
     if (g_vk.has_amd_anti_lag && !c->antilag.antiLag) g_vk.has_amd_anti_lag = 0;
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
-    if (has_dbuf) {   // capture and replay is for tools, and costs the driver bookkeeping
-        c->dbuf.descriptorBufferCaptureReplay = VK_FALSE;
-    }
     if (vk_fsr4_wanted())
-        rt_log("vk: for FSR 4: descriptorBuffer %d, computeDerivativeGroupLinear %d, shaderInt8 %d, shaderFloat16 %d, "
-               "shaderIntegerDotProduct %d, computeFullSubgroups %d, runtimeDescriptorArray %d",
-               has_dbuf && c->dbuf.descriptorBuffer, has_csd && c->csd.computeDerivativeGroupLinear, c->f12.shaderInt8,
-               c->f12.shaderFloat16, c->f13.shaderIntegerDotProduct, c->f13.computeFullSubgroups,
-               c->f12.runtimeDescriptorArray);
+        rt_log("vk: for FSR 4: computeDerivativeGroupLinear %d, shaderInt8 %d, shaderFloat16 %d, "
+               "shaderIntegerDotProduct %d, subgroupSizeControl %d, computeFullSubgroups %d, runtimeDescriptorArray %d, "
+               "cooperativeMatrix %d, shaderFloat8 %d",
+               has_csd && c->csd.computeDerivativeGroupLinear, c->f12.shaderInt8, c->f12.shaderFloat16,
+               c->f13.shaderIntegerDotProduct, c->f13.subgroupSizeControl, c->f13.computeFullSubgroups,
+               c->f12.runtimeDescriptorArray, has_coop && c->coop.cooperativeMatrix, has_f8);
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
         const char *e = cfg_get("AC_FEEDBACK");

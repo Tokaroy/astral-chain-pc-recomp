@@ -133,10 +133,13 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                "and FSR 4 chosen here take effect after a restart. The HUD is not touched.",
     [UI_MENU_UPSCALING_DESC_OTHER] = "A temporal upscaler in place of the game's anti-aliasing: smoother edges and less "
                                      "shimmer, and with a mode below Native more frames per second. AMD FSR 3 runs on "
-                                     "any GPU; Automatic is FSR 3 here (NVIDIA DLSS and Intel XeSS are Windows only). "
-                                     "The HUD is not touched.",
+                                     "any GPU, AMD FSR 4 on a Radeon RX 6000 or newer; Automatic is FSR 3 here (NVIDIA "
+                                     "DLSS and Intel XeSS are Windows only). FSR 4 chosen here takes effect after a "
+                                     "restart. The HUD is not touched.",
     [UI_MENU_UPSCALING_OFF] = "Off", [UI_MENU_UPSCALING_AUTO] = "Automatic",
     [UI_MENU_UPSCALING_UNAVAILABLE] = "not available here",
+    [UI_MENU_UPSCALING_INSTEAD] = "not available here: %s in use",
+    [UI_MENU_UPSCALING_MISSING] = "%s is missing: %s in use",
     [UI_MENU_UPSCALING_UNTIL] = "%s until a restart",
     [UI_MENU_UPSCALING_QUALITY] = "Upscaler mode",
     [UI_MENU_UPSCALING_QUALITY_DESC] = "The size the 3D scene is drawn at before the upscaler brings it to the game "
@@ -541,10 +544,13 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                "XeSS и FSR 4, выбранные здесь, действуют после перезапуска. Интерфейс не затрагивается.",
     [UI_MENU_UPSCALING_DESC_OTHER] = "Временной апскейлер вместо сглаживания игры: ровнее края и меньше мерцания, а в "
                                      "режиме ниже «Родного» — больше кадров в секунду. AMD FSR 3 работает на любой "
-                                     "видеокарте; «Автоматически» здесь — FSR 3 (NVIDIA DLSS и Intel XeSS — только в "
-                                     "Windows). Интерфейс не затрагивается.",
+                                     "видеокарте, AMD FSR 4 — на Radeon RX 6000 и новее; «Автоматически» здесь — FSR 3 "
+                                     "(NVIDIA DLSS и Intel XeSS — только в Windows). FSR 4, выбранный здесь, действует "
+                                     "после перезапуска. Интерфейс не затрагивается.",
     [UI_MENU_UPSCALING_OFF] = "Выкл.", [UI_MENU_UPSCALING_AUTO] = "Автоматически",
     [UI_MENU_UPSCALING_UNAVAILABLE] = "недоступно здесь",
+    [UI_MENU_UPSCALING_INSTEAD] = "недоступно здесь: используется %s",
+    [UI_MENU_UPSCALING_MISSING] = "нет файла %s: используется %s",
     [UI_MENU_UPSCALING_UNTIL] = "%s до перезапуска",
     [UI_MENU_UPSCALING_QUALITY] = "Режим апскейлера",
     [UI_MENU_UPSCALING_QUALITY_DESC] = "Размер, в котором рисуется 3D-сцена, прежде чем апскейлер доведёт её до разрешения "
@@ -1227,10 +1233,13 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                "reiniciar. O HUD não é afetado.",
     [UI_MENU_UPSCALING_DESC_OTHER] = "Um upscaler temporal no lugar do antisserrilhado do jogo: bordas mais suaves e menos "
                                      "cintilação e, com um modo abaixo de Nativo, mais quadros por segundo. AMD FSR 3 roda "
-                                     "em qualquer placa; Automático é o FSR 3 aqui (NVIDIA DLSS e Intel XeSS são somente "
-                                     "no Windows). O HUD não é afetado.",
+                                     "em qualquer placa, AMD FSR 4 em uma Radeon RX 6000 ou mais recente; Automático é "
+                                     "o FSR 3 aqui (NVIDIA DLSS e Intel XeSS são somente no Windows). FSR 4 escolhido "
+                                     "aqui vale após reiniciar. O HUD não é afetado.",
     [UI_MENU_UPSCALING_OFF] = "Desligado", [UI_MENU_UPSCALING_AUTO] = "Automático",
     [UI_MENU_UPSCALING_UNAVAILABLE] = "indisponível aqui",
+    [UI_MENU_UPSCALING_INSTEAD] = "indisponível aqui: %s em uso",
+    [UI_MENU_UPSCALING_MISSING] = "%s não encontrado: %s em uso",
     [UI_MENU_UPSCALING_UNTIL] = "%s até reiniciar",
     [UI_MENU_UPSCALING_QUALITY] = "Modo do upscaler",
     [UI_MENU_UPSCALING_QUALITY_DESC] = "O tamanho em que a cena 3D é desenhada antes que o upscaler a leve à resolução do "
@@ -1765,10 +1774,13 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                                "AMD FSR 4 需要 Radeon RX 6000 或更新的显卡。“自动”在可运行时使用 DLSS，否则使用 FSR 3。"
                                "在此选择的 DLSS、XeSS 和 FSR 4 重启后生效。HUD 不受影响。",
     [UI_MENU_UPSCALING_DESC_OTHER] = "以时间性超分辨率取代游戏的抗锯齿：边缘更平滑、闪烁更少；选择低于“原生”的模式还能提高"
-                                     "帧率。AMD FSR 3 可在任何显卡上运行；此处“自动”即 FSR 3（NVIDIA DLSS 和 Intel XeSS "
-                                     "仅限 Windows）。HUD 不受影响。",
+                                     "帧率。AMD FSR 3 可在任何显卡上运行，AMD FSR 4 需要 Radeon RX 6000 或更新的显卡；此处“自动”即 "
+                                     "FSR 3（NVIDIA DLSS 和 Intel XeSS 仅限 Windows）。在此选择的 FSR 4 重启后生效。"
+                                     "HUD 不受影响。",
     [UI_MENU_UPSCALING_OFF] = "关闭", [UI_MENU_UPSCALING_AUTO] = "自动",
     [UI_MENU_UPSCALING_UNAVAILABLE] = "此处不可用",
+    [UI_MENU_UPSCALING_INSTEAD] = "此处不可用：使用 %s",
+    [UI_MENU_UPSCALING_MISSING] = "缺少 %s：使用 %s",
     [UI_MENU_UPSCALING_UNTIL] = "重启前使用 %s",
     [UI_MENU_UPSCALING_QUALITY] = "超分辨率模式",
     [UI_MENU_UPSCALING_QUALITY_DESC] = "3D 场景在超分辨率放大到游戏分辨率之前的绘制尺寸（显示在数值下方）。“原生”以全尺寸"

@@ -32,6 +32,9 @@ int vk_dlaa_choice_state(const char *up);   // the menu's upscaler row: 0 runs o
 const char *vk_dlaa_upscaler_name(void);    // the upscaler that runs or would at once for the setting, NULL: none
 // resolution.c res_settle (boot.c), the device up: the upscaler the setting asks for can run here
 int vk_dlaa_upscaler_ok(void);
+// boot.c, the sizes settled and before the game runs: the chosen upscaler's set-up that would otherwise stall the
+// first frame with a 3D scene (FSR 4's context for the game's sizes).
+void vk_dlaa_warm(void);
 extern VkImage vk_dlaa_swap_pic;            // the image behind vk_dlaa_swap_view (vk_exec.h): vk_hdr.c's scene
 
 // ---- per-object motion (vk_exec_draw.c "per-object motion", vk_mvprev.c), for either backend

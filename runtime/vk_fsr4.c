@@ -3,16 +3,29 @@
 // Vulkan back end's, ffxDispatch with the frame's resources, ffxDestroyContext once no frame in flight uses the
 // context.
 //
-// The library is loaded at run time from the folder of the executable:
-// - Windows: amd_fidelityfx_loader_vk.dll, which finds amd_fidelityfx_upscaler_vk.dll next to it: AMD's signed DLLs of
-//   the FSR SDK 2.4.0 (FSR 4.1.2), which the release ships in bin/ and the installer copies (tools/fsr4_sdk.py pins
-//   them). AMD's FSR 4.1 runs on the Radeon RX 6000 series and newer and on the Ryzen processors with RDNA 2 or newer
-//   graphics; the menu offers it on those only (vk_fsr4_offered).
-// - elsewhere: amd_fidelityfx_upscaler_vk.so, not shipped (AMD publishes no Linux library): a library with the same
-//   entry points that the player puts there.
-// AC_FSR4_LIB names another file. No AMD header is compiled in: the few structures used are declared here from the SDK's
+// The library is AMD's own on every platform: amd_fidelityfx_loader_vk.dll, which finds amd_fidelityfx_upscaler_vk.dll
+// next to it, AMD's signed DLLs of the FSR SDK 2.4.0 (FSR 4.1.2; tools/fsr4_sdk.py pins them), loaded at run time from
+// the folder of the executable:
+// - Windows: the loader DLL itself. The release ships the two DLLs in bin/ and the installer copies them.
+// - Linux: AMD publishes no Linux library, so the same two DLLs run through ffx-vk-linux (libffx_vk_linux.so, MIT,
+//   github.com/DuIslingr/ffx-vk-linux: a PE loader with the Windows services and the calling-convention bridges the
+//   DLLs need, no Wine), which exports the FSR API's entry points under their own names. Its ffxvkLoad is given the
+//   folder of the DLLs. The three files are checked for before anything is loaded (files_there): a missing one is
+//   named in the log and to the menu (vk_fsr4_missing), FSR 4 is off and vk_dlaa.c has FSR 3 run in its place.
+// AC_FSR4_LIB names another file to load (the loader DLL on Windows, the bridge on Linux). AMD's FSR 4.1 runs on the
+// Radeon RX 6000 series and newer and on the Ryzen processors with RDNA 2 or newer graphics; the menu offers it on
+// those only (vk_fsr4_offered). No AMD header is compiled in: the few structures used are declared here from the SDK's
 // C ABI (ffx_api.h, ffx_api_types.h, vk/ffx_api_vk.h, upscalers/include/ffx_upscale.h of SDK 2.4.0), as vk_xess.c does
 // for Intel's.
+//
+// FSR 4's model: AMD's library picks it from the GPU family it runs on (the full network on the Radeon RX 7000 and
+// 9000 series, a version of it for the RX 6000, FSR 4 Lite, a smaller network, on its integrated GPUs) and makes FSR
+// 3.1 for a family it does not list. The SDK 2.4.0 DLL lists no family for the integrated RDNA 3 GPUs before the
+// Radeon 890M (a Ryzen Z1 Extreme's Radeon 780M, family GC 11.0.1, got 3.1.6). On Linux, where the bridge answers the
+// library's question about the family, an AMD integrated GPU that got FSR 3.1 is asked again for FSR 4 Lite
+// (ffxvkFsr4Model: the bridge then names the Radeon 890M's family; the library's Vulkan queries still see the real
+// GPU): the Z1 Extreme runs FSR 4.1.2 Lite that way, validation layer silent. AC_FSR4_MODEL=lite asks for Lite at
+// once on any GPU, =own never asks for it.
 //
 // vk_dlaa.c does everything around FSR 4 as for FSR 3 (vk_fsr3.c) and XeSS: it finds the scene, jitters its draws, makes
 // the motion vectors and calls vk_fsr4_evaluate where the upscaler runs, then copies the result where the game reads it.
@@ -21,7 +34,7 @@
 // depth near 0 to far 1 (not inverted, not infinite), linear scene light with auto exposure, or the tonemapped
 // composite with an exposure of 1.
 //
-// What AMD's library (the Windows DLLs) is given beyond that, from the SDK's documentation
+// What AMD's library is given beyond that, from the SDK's documentation
 // (Kits/FidelityFX/docs/techniques/super-resolution-ml.md) and its Vulkan back end (backend/vk/ffx_vk.cpp, MIT, read for
 // what it does with a resource description):
 // - the API version (ffxCreateContextDescUpscaleVersion), which the documentation requires since SDK 2.1;
@@ -33,11 +46,11 @@
 // - and the context it made is checked. The loader makes its newest upscaler that takes the GPU, so on a GPU FSR 4
 //   does not run on it makes FSR 3.1 without an error (an Arc 140T: provider 3.1.6, under the name FSR 4 in the menu
 //   and the log). A context that is not FSR 4 is destroyed and FSR 4 is off for the run: the menu says it cannot run
-//   here and vk_dlaa.c has FSR 3 upscale a reduced scene. AC_FSR4_ANY_VERSION=1 (test) keeps such a context, to
-//   exercise this file on another GPU.
-// A library elsewhere than Windows gets none of these four (AMD_LIB): that path is as it was until it is worked on.
+//   here and vk_dlaa.c has FSR 3 run in its place. AC_FSR4_ANY_VERSION=1 (test) keeps such a context, to exercise
+//   this file on another GPU.
 //
-// Threads: the contexts are made and dispatched on the replay thread. One context per scene size, output size and colour
+// Threads: the contexts are made and dispatched on the replay thread, but for the first, which the boot thread makes
+// before any frame (vk_fsr4_warm). One context per scene size, output size and colour
 // kind, at most CTX_MAX (handheld and docked differ, so do HDR output on and off and each game resolution chosen in the
 // menu): the least recently used goes for a new one, and all go once FSR 4 has not run for a while (vk_fsr4_trim; AMD
 // gives a working set of 81 MB at 1920x1080 and 318 MB at 3840x2160). ffxDestroyContext does not wait for the GPU and
@@ -70,7 +83,6 @@ typedef void (*FfxMessageFn)(uint32_t type, const wchar_t *message);
 #define FFX_TYPE_CREATE_UPSCALE ((FfxType)(FFX_EFFECT_UPSCALE | 0x00))
 #define FFX_TYPE_DISPATCH_UPSCALE ((FfxType)(FFX_EFFECT_UPSCALE | 0x01))
 #define FFX_TYPE_BACKEND_VK ((FfxType)(FFX_BACKEND_VK | 0x03))
-#define FFX_TYPE_BACKEND_VK_OLD ((FfxType)0x3)   // FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_DEPRECATED
 #define FFX_TYPE_QUERY_PROVIDER_VERSION ((FfxType)6)
 #define FFX_TYPE_CREATE_UPSCALE_VERSION ((FfxType)(FFX_EFFECT_UPSCALE | 0x0b))
 #define FFX_UPSCALER_VERSION ((4u << 22) | (1u << 12) | 2u)   // FFX_UPSCALER_VERSION of SDK 2.4.0: 4.1.2
@@ -131,7 +143,7 @@ typedef struct {
     VkDevice device;
     VkPhysicalDevice phys;
     PFN_vkGetDeviceProcAddr get_device_proc;
-} FfxBackendVk;   // both back end descriptions (the current and the deprecated one) have this layout
+} FfxBackendVk;
 typedef struct {
     FfxHeader header;
     void *command_list;
@@ -164,15 +176,13 @@ typedef FfxReturn (*PFN_Destroy)(FfxContext *, const void *);
 typedef FfxReturn (*PFN_Query)(FfxContext *, FfxHeader *);
 typedef FfxReturn (*PFN_Dispatch)(FfxContext *, const FfxHeader *);
 
+// ffx-vk-linux's own entry points (ffx_vk_linux.h)
+typedef int (*PFN_BridgeLoad)(const char *directory);   // 0: AMD's DLLs are loaded from there
+typedef const char *(*PFN_BridgeError)(void);
+typedef int (*PFN_BridgeModel)(const char *model);      // "lite": FSR 4 Lite for the contexts made from now on
+
 #define CTX_MAX 4
 #define DEAD_MAX 8
-
-// AMD's own library (Windows), as opposed to another one with the same entry points: see the header.
-#ifdef _WIN32
-#define AMD_LIB 1
-#else
-#define AMD_LIB 0
-#endif
 
 static struct {
     void *lib;
@@ -180,9 +190,11 @@ static struct {
     PFN_Destroy destroy;
     PFN_Query query;
     PFN_Dispatch dispatch;
+    PFN_BridgeModel model;   // Linux: the bridge's ffxvkFsr4Model
     int tried, loaded, failed;
-    int old_backend;   // the library takes only the deprecated back end description (a Linux library)
+    int lite;                // FSR 4 Lite was asked for (the header's paragraph on the model)
     char path[PLAT_PATH_MAX];
+    const char *missing;     // the file FSR 4 needs that is not there (files_there), NULL when none is
     struct {
         FfxContext ctx;
         uint32_t w, h, ow, oh, flags;
@@ -193,7 +205,7 @@ static struct {
         uint64_t after;   // the timeline value that must be done before it is destroyed
     } dead[DEAD_MAX];
     uint64_t clock, evals;
-    VkImage exposure;   // 1x1 R32F holding 1: a Linux library wants an exposure image even for the tonemapped composite
+    VkImage exposure;   // 1x1 R32F holding 1: the exposure of the tonemapped composite
     VmaAllocation exposure_mem;
 } F;
 
@@ -207,11 +219,24 @@ int vk_fsr4_tried(void) { return F.tried; }
 
 int vk_fsr4_available(void) { return F.loaded && !F.failed; }
 
+#define AMD_LOADER "amd_fidelityfx_loader_vk.dll"
+#define AMD_UPSCALER "amd_fidelityfx_upscaler_vk.dll"
 #ifdef _WIN32
-#define FSR4_LIB "amd_fidelityfx_loader_vk.dll"
+#define FSR4_LIB AMD_LOADER
+#define FSR4_NEEDS "AMD's " AMD_LOADER " and " AMD_UPSCALER " (FSR SDK 2.4.0)"
 #else
-#define FSR4_LIB "amd_fidelityfx_upscaler_vk.so"
+#define FSR4_LIB "libffx_vk_linux.so"   // the bridge: it loads AMD's two DLLs from the folder it is given
+#define FSR4_NEEDS FSR4_LIB " (ffx-vk-linux) and AMD's " AMD_LOADER " and " AMD_UPSCALER " (FSR SDK 2.4.0)"
 #endif
+
+// The executable's folder, its last separator included. 0 when the executable's path is unknown.
+static int exe_dir(char *dir, size_t size) {
+    int len = plat_exe_path(dir, size - 40);   // room for a file name of this file's
+    char *cut = len ? plat_last_sep(dir) : NULL;
+    if (!cut) return 0;
+    cut[1] = 0;
+    return 1;
+}
 
 // The library's path: AC_FSR4_LIB, else FSR4_LIB next to the executable. 0 when the executable's path is unknown.
 static int lib_path(char *path, size_t size) {
@@ -220,20 +245,56 @@ static int lib_path(char *path, size_t size) {
         snprintf(path, size, "%s", own);
         return 1;
     }
-    int len = plat_exe_path(path, size - 40);
-    char *cut = len ? plat_last_sep(path) : NULL;
-    if (!cut) return 0;
-    strcpy(cut + 1, FSR4_LIB);
+    if (!exe_dir(path, size)) return 0;
+    strcat(path, FSR4_LIB);
     return 1;
 }
+
+// Every file FSR 4 loads is there: the library and, on Linux, AMD's two DLLs next to the executable, which the bridge
+// loads from that folder (on Windows the loader DLL finds the upscaler DLL beside itself). F.missing names the first
+// that is not.
+static int files_there(void) {
+    static char lib_name[80];
+    char path[PLAT_PATH_MAX];
+    F.missing = NULL;
+    if (!lib_path(path, sizeof path)) return 0;
+    if (!plat_file_exists(path)) {
+        const char *cut = plat_last_sep(path);
+        snprintf(lib_name, sizeof lib_name, "%s", cut ? cut + 1 : path);
+        F.missing = lib_name;
+        return 0;
+    }
+#ifndef _WIN32
+    static const char *const dlls[] = {AMD_LOADER, AMD_UPSCALER};
+    for (int i = 0; i < 2; i++) {
+        if (!exe_dir(path, sizeof path)) return 0;
+        strcat(path, dlls[i]);
+        if (!plat_file_exists(path)) {
+            F.missing = dlls[i];
+            return 0;
+        }
+    }
+#endif
+    return 1;
+}
+
+const char *vk_fsr4_missing(void) { return F.missing; }
 
 static int lib_load(void) {
     if (F.tried) return F.loaded;
     F.tried = 1;
-    if (!lib_path(F.path, sizeof F.path)) return 0;
+    char dir[PLAT_PATH_MAX] = "";
+    if (!lib_path(F.path, sizeof F.path) || !exe_dir(dir, sizeof dir)) return 0;
+    if (!files_there()) {
+        if (F.missing)
+            rt_log("fsr4: %s is missing: FSR 4 needs " FSR4_NEEDS " in %s: FSR 4 off, FSR 3 runs in its place",
+                   F.missing, dir);
+        return 0;
+    }
     F.lib = plat_lib_open(F.path);
     if (!F.lib) {
-        rt_log("fsr4: cannot load %s (put AMD's FSR 4 library there): FSR 4 off", F.path);
+        const char *why = plat_lib_error();
+        rt_log("fsr4: cannot load %s%s%s: FSR 4 off, FSR 3 runs in its place", F.path, *why ? ": " : "", why);
         return 0;
     }
     F.create = (PFN_Create)plat_lib_sym(F.lib, "ffxCreateContext");
@@ -241,18 +302,47 @@ static int lib_load(void) {
     F.query = (PFN_Query)plat_lib_sym(F.lib, "ffxQuery");
     F.dispatch = (PFN_Dispatch)plat_lib_sym(F.lib, "ffxDispatch");
     if (!F.create || !F.destroy || !F.dispatch) {
-        rt_log("fsr4: %s lacks the FSR API's entry points: FSR 4 off", F.path);
+        rt_log("fsr4: %s lacks the FSR API's entry points: FSR 4 off, FSR 3 runs in its place", F.path);
         return 0;
     }
+#ifndef _WIN32
+    // the bridge loads AMD's DLLs now, so a DLL it cannot run is known here and not at the first frame
+    PFN_BridgeLoad load = (PFN_BridgeLoad)plat_lib_sym(F.lib, "ffxvkLoad");
+    PFN_BridgeError why = (PFN_BridgeError)plat_lib_sym(F.lib, "ffxvkError");
+    F.model = (PFN_BridgeModel)plat_lib_sym(F.lib, "ffxvkFsr4Model");
+    if (!load || load(dir) != 0) {
+        rt_log("fsr4: %s could not load AMD's DLLs from %s (%s): FSR 4 off, FSR 3 runs in its place", F.path, dir,
+               load && why ? why() : "it has no ffxvkLoad");
+        return 0;
+    }
+    const char *model = cfg_get("AC_FSR4_MODEL");
+    if (model && !strcmp(model, "lite") && F.model && F.model("lite") == 0) {
+        F.lite = 1;
+        rt_log("fsr4: FSR 4 Lite asked for (AC_FSR4_MODEL=lite)");
+    }
+#endif
     rt_log("fsr4: %s loaded", F.path);
     return F.loaded = 1;
+}
+
+// Whether a GPU AMD's library made FSR 3.1 for is asked again for FSR 4 Lite (the header's paragraph on the model):
+// on Linux, an AMD integrated GPU, unless AC_FSR4_MODEL=own.
+static int lite_may(void) {
+#ifdef _WIN32
+    return 0;
+#else
+    const char *model = cfg_get("AC_FSR4_MODEL");
+    const VkCtx *c = vk_ctx();
+    return F.model && !F.lite && !(model && !strcmp(model, "own")) && c->props.vendorID == 0x1002 &&
+           c->props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+#endif
 }
 
 // Whether the menu offers FSR 4 on this GPU: an AMD Radeon of the RDNA 2 architecture or newer (AMD's FSR 4.1 runs
 // on the Radeon RX 6000 series and newer and on the Ryzen processors with RDNA 2 or newer graphics; told apart by
 // VK_KHR_ray_query, which AMD's drivers offer from RDNA 2 on, the first Radeons with ray accelerators), with the
-// library there. Whether AMD's library takes this GPU is known only once it runs (an integrated GPU AMD does not list
-// fails ffxCreateContext, and FSR 3 runs), so a choice that fails says so in the menu.
+// library's files there. Whether AMD's library takes this GPU is known only once it runs (an integrated GPU AMD does
+// not list gets FSR 3.1 from it, and FSR 3 runs), so a choice that fails says so in the menu.
 static int offered;
 
 static int has_ray_query(void) {
@@ -267,9 +357,8 @@ static int has_ray_query(void) {
 }
 
 void vk_fsr4_init(void) {
-    char path[PLAT_PATH_MAX];
     int amd = vk_ctx()->props.vendorID == 0x1002, rdna2 = amd && has_ray_query();
-    int lib = lib_path(path, sizeof path) && plat_file_exists(path);
+    int lib = files_there();
     offered = rdna2 && lib;
     if (vk_fsr4_wanted() || amd)
         rt_log("fsr4: %s offered (AMD GPU %d, RDNA 2 or newer %d, library %d)", offered ? "is" : "is not", amd, rdna2, lib);
@@ -315,8 +404,8 @@ static uint32_t surface_format(VkFormat f) {
     }
 }
 
-// The inputs are read as sampled images (COMPUTE_READ: AMD's documentation asks for them in SHADER_READ_ONLY_OPTIMAL, and
-// a Linux library insists on it), the output written as storage.
+// The inputs are read as sampled images (COMPUTE_READ: AMD's documentation asks for them in SHADER_READ_ONLY_OPTIMAL),
+// the output written as storage.
 static int resource(FfxResource *r, const Fsr4Image *im, uint32_t usage, uint32_t state, const char *what) {
     static int warned;
     if (im->level || im->layer) {
@@ -388,7 +477,7 @@ static VkImageAspectFlags aspect(VkFormat f) {
 // give together (D32_SFLOAT_S8_UINT for R32_FLOAT with depth and stencil, D32_SFLOAT with depth alone), so an image
 // with stencil says so, as AMD's ffxApiGetImageResourceDescriptionVK does.
 static uint32_t depth_usage(VkFormat f) {
-    return FFX_USAGE_DEPTHTARGET | (AMD_LIB && aspect(f) & VK_IMAGE_ASPECT_STENCIL_BIT ? FFX_USAGE_STENCILTARGET : 0);
+    return FFX_USAGE_DEPTHTARGET | (aspect(f) & VK_IMAGE_ASPECT_STENCIL_BIT ? FFX_USAGE_STENCILTARGET : 0);
 }
 
 // The inputs live in GENERAL; FSR 4 reads them in SHADER_READ_ONLY_OPTIMAL (their COMPUTE_READ state), so they move
@@ -468,28 +557,33 @@ static FfxContext *context(uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, uin
     }
     const VkCtx *c = vk_ctx();
     FfxCreateUpscaleVersion ver = {.header = {FFX_TYPE_CREATE_UPSCALE_VERSION, NULL}, .version = FFX_UPSCALER_VERSION};
-    FfxBackendVk be = {.header = {F.old_backend ? FFX_TYPE_BACKEND_VK_OLD : FFX_TYPE_BACKEND_VK,
-                                  AMD_LIB ? &ver.header : NULL},
+    FfxBackendVk be = {.header = {FFX_TYPE_BACKEND_VK, &ver.header},
                        .device = c->device, .phys = c->phys, .get_device_proc = vkGetDeviceProcAddr};
     FfxCreateUpscale cu = {.header = {FFX_TYPE_CREATE_UPSCALE, &be.header}, .flags = flags,
                            .max_render = {w, h}, .max_upscale = {ow, oh}, .message = on_message};
+    static int any = -1;
+    if (any < 0) any = rt_knob("FSR4_ANY_VERSION", "0");   // AC_FSR4_ANY_VERSION=1: keep an FSR 3.1 context (test)
     uint64_t t0 = plat_now_ns();
     FfxContext ctx = NULL;
-    FfxReturn r = F.create(&ctx, &cu.header, NULL);
-    if (r != 0 && !F.old_backend) {   // a Linux library knows only the deprecated back end description
-        F.old_backend = 1;
-        be.header.type = FFX_TYPE_BACKEND_VK_OLD;
-        r = F.create(&ctx, &cu.header, NULL);
-        if (r == 0) rt_log("fsr4: the library takes the deprecated Vulkan back end description");
+    const char *name;
+    int old;   // AMD's loader made its newest upscaler that takes this GPU: FSR 3.1 where FSR 4 does not run (the header)
+    for (;;) {
+        FfxReturn r = F.create(&ctx, &cu.header, NULL);
+        if (r != 0 || !ctx) return fail("context creation", r), NULL;
+        name = "?";
+        FfxQueryProviderVersion q = {.header = {FFX_TYPE_QUERY_PROVIDER_VERSION, NULL}};
+        if (F.query && F.query(&ctx, &q.header) == 0 && q.version_name) name = q.version_name;
+        old = name[0] >= '0' && name[0] <= '9' && atoi(name) < 4;
+        if (!old || any || !lite_may()) break;
+        // an AMD integrated GPU the library lists no FSR 4 model for: once more, asking for FSR 4 Lite (the header)
+        rt_log("fsr4: the library made its FSR %s upscaler for this GPU: asking it for FSR 4 Lite, the model AMD gives "
+               "its integrated GPUs", name);
+        F.destroy(&ctx, NULL);   // nothing was dispatched with it
+        ctx = NULL;
+        F.lite = 1;              // asked once, whatever comes of it
+        if (F.model("lite") != 0) return fail("the choice of FSR 4 Lite", 0), NULL;
     }
-    if (r != 0 || !ctx) return fail("context creation", r), NULL;
-    const char *name = "?";
-    FfxQueryProviderVersion q = {.header = {FFX_TYPE_QUERY_PROVIDER_VERSION, NULL}};
-    if (F.query && F.query(&ctx, &q.header) == 0 && q.version_name) name = q.version_name;
-    // AMD's loader made its newest upscaler that takes this GPU: FSR 3.1 where FSR 4 does not run (the header)
-    static int any = -1;
-    if (any < 0) any = rt_knob("FSR4_ANY_VERSION", "0");   // AC_FSR4_ANY_VERSION=1: keep it (test)
-    if (AMD_LIB && name[0] >= '0' && name[0] <= '9' && atoi(name) < 4) {
+    if (old) {
         if (!any) {
             F.destroy(&ctx, NULL);   // nothing was dispatched with it
             rt_log("fsr4: the library made its FSR %s upscaler for this GPU, not FSR 4: FSR 4 off for this run", name);
@@ -502,9 +596,24 @@ static FfxContext *context(uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, uin
     F.ctx[free_slot].ctx = ctx;
     F.ctx[free_slot].w = w, F.ctx[free_slot].h = h, F.ctx[free_slot].ow = ow, F.ctx[free_slot].oh = oh;
     F.ctx[free_slot].flags = flags, F.ctx[free_slot].used = F.clock;
-    rt_log("fsr4: context %ux%u to %ux%u, %s colour, provider %s, made in %.1f ms", w, h, ow, oh,
-           flags & FFX_UP_HDR ? "linear" : "LDR", name, (plat_now_ns() - t0) / 1e6);
+    rt_log("fsr4: context %ux%u to %ux%u, %s colour, provider %s%s, made in %.1f ms", w, h, ow, oh,
+           flags & FFX_UP_HDR ? "linear" : "LDR", name, F.lite ? " (FSR 4 Lite asked for)" : "",
+           (plat_now_ns() - t0) / 1e6);
     return &F.ctx[free_slot].ctx;
+}
+
+// The context's flags for a colour kind: linear scene light, or the tonemapped composite, which is sRGB-encoded (the
+// header).
+static uint32_t context_flags(int hdr) { return hdr ? FFX_UP_HDR | FFX_UP_AUTO_EXPOSURE : FFX_UP_NON_LINEAR; }
+
+// AMD's library compiles its upscaler's shaders when it makes a context (FSR 4's network is 30 compute shaders): 0.2
+// to 1 s for 1920x1080 and 2.6 s for 3840x2160 on a Ryzen Z1 Extreme, twice where FSR 4 Lite is asked for after an
+// FSR 3.1 context. At the first frame with a 3D scene, which comes right after a load, that was a stall the player
+// saw, and it left a cutscene's audio ahead of its picture. So the context the game's sizes give is made here, while
+// the game starts; another size (handheld, HDR output switched) still makes its own at its first frame.
+void vk_fsr4_warm(uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, int hdr) {
+    if (!vk_fsr4_available() || !w || !h) return;
+    context(w, h, ow ? ow : w, oh ? oh : h, context_flags(hdr));
 }
 
 int vk_fsr4_evaluate(VkCommandBuffer cb, const Fsr4Eval *e) {
@@ -519,8 +628,7 @@ int vk_fsr4_evaluate(VkCommandBuffer cb, const Fsr4Eval *e) {
     if (!exposure_image(cb)) return fail("exposure image", 0);
     Fsr4Image ex = {.image = F.exposure, .format = VK_FORMAT_R32_SFLOAT, .width = 1, .height = 1};
     resource(&d.exposure, &ex, FFX_USAGE_READ_ONLY, FFX_STATE_COMPUTE_READ, "exposure");
-    // linear scene light, or the tonemapped composite, which is sRGB-encoded (the header)
-    uint32_t flags = e->hdr ? FFX_UP_HDR | FFX_UP_AUTO_EXPOSURE : AMD_LIB ? FFX_UP_NON_LINEAR : 0;
+    uint32_t flags = context_flags(e->hdr);
     if (flags & FFX_UP_NON_LINEAR) d.flags = FFX_DISPATCH_NON_LINEAR_SRGB;
     FfxContext *ctx = context(e->w, e->h, ow, oh, flags);
     if (!ctx) return 0;

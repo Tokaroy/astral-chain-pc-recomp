@@ -1036,10 +1036,24 @@ def main():
     if WIN and xess.is_file():
         shutil.copy2(xess, exe.parent / xess.name)
     # AMD FSR 4 (runtime/vk_fsr4.c, upscaling = fsr4): AMD's signed loader and upscaler DLLs from toolchain/fsr4
-    # (tools/fsr4_sdk.py fetches them), loaded at run time when present; a release ships them in bin/ as for XeSS
-    for name in ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll'):
+    # (tools/fsr4_sdk.py fetches them), loaded at run time when present; a release ships them in bin/ as for XeSS.
+    # Linux runs the same two DLLs through ffx-vk-linux (runtime/third_party/ffx-vk-linux), built here for a
+    # developer build (tools/ffx_vk_linux.py), which then fetches the DLLs itself, once (tools/fsr4_sdk.py's pins,
+    # 36 MB); a release has the three files in bin/, the library built against its sysroot, and the installer copies
+    # them. Without the DLLs or the library the game says which file is missing and runs FSR 3.
+    fsr4_names = ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll')
+    if not WIN and not DEPS and not args.sysroot:
+        import ffx_vk_linux
+        import fsr4_sdk
+        if ffx_vk_linux.build(exe.parent, quiet=True) and not all((fsr4_sdk.DEST / n).is_file() for n in fsr4_names):
+            try:
+                fsr4_sdk.extract(fsr4_sdk.fetch())
+            except (OSError, SystemExit) as e:   # offline, or a download that is not the pinned file
+                print(f'build_game: AMD\'s FSR 4 DLLs were not fetched ({e}): FSR 4 off, FSR 3 runs in its place',
+                      file=sys.stderr)
+    for name in fsr4_names:
         fsr4 = MAIN_ROOT / 'toolchain' / 'fsr4' / name
-        if WIN and fsr4.is_file():
+        if fsr4.is_file():
             shutil.copy2(fsr4, exe.parent / name)
     sections, image = pe_sections(exe) if WIN else elf_sections(exe)
     print(f'{below_root(exe)}: file {mib(exe.stat().st_size)}, '

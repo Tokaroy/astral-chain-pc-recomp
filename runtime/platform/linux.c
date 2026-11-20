@@ -1732,6 +1732,10 @@ int plat_open_folder(const char *path) {
 
 void *plat_lib_open(const char *name) { return dlopen(name, RTLD_NOW | RTLD_LOCAL); }
 void *plat_lib_sym(void *lib, const char *name) { return lib ? dlsym(lib, name) : NULL; }
+const char *plat_lib_error(void) {
+    const char *e = dlerror();
+    return e ? e : "";
+}
 
 // ---- machine load: /proc/stat and /proc/self/stat for the CPU, hwmon for the temperature, the amdgpu sysfs files of
 // the render device for the GPU.

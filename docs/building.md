@@ -317,16 +317,23 @@ with draws drawn again; `AC_DLAA_MVDEBUG=1` with `--shot` shows the vectors (x r
 the pins or the options change. A change to `runtime/vk_fsr3.c` wants the same scripted run with `AC_UPSCALING=fsr3`, native and upscaled.
 AMD FSR 4 (`AC_UPSCALING=fsr4`) is not built from source: AMD ships it only as signed DLLs. `tools/fsr4_sdk.py`
 downloads the pinned `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` (FSR SDK 2.4.0) and their
-licence into `toolchain/fsr4/`, and `tools/build_game.py` copies the DLLs next to `astralchain.exe`. Off Windows there
-is no AMD library: put an `amd_fidelityfx_upscaler_vk.so` with the same entry points next to `astralchain`, or name
-one with `AC_FSR4_LIB`. A change to `runtime/vk_fsr4.c` wants the same scripted run with `AC_UPSCALING=fsr4`, native
-and upscaled, on an AMD RDNA 2 or newer GPU: its log names the library, the upscaler the library made
-(`fsr4: context ... provider ...`) and the first dispatch. A refusal is logged with the library's reason, and so is a
-library that made another upscaler than FSR 4 (on any other GPU AMD's loader makes FSR 3.1 without an error): FSR 4
-is then off for the run, FSR 3 upscales a reduced scene, and a scene at its own size gets the game's anti-aliasing
-back. On another GPU `AC_FSR4_ANY_VERSION=1` (test) keeps that FSR 3.1 context, which exercises `vk_fsr4.c`'s calls
-and layouts; run it with `AC_VK_VALIDATION=1`, since the recorder thread, which is off on AMD GPUs, records beside
-the library there.
+licence into `toolchain/fsr4/`, and `tools/build_game.py` copies the DLLs next to `astralchain.exe`. Linux runs the
+same two DLLs: AMD publishes no Linux library, so they are loaded by ffx-vk-linux, whose sources are in
+`runtime/third_party/ffx-vk-linux/` (MIT, unmodified). On Linux `tools/build_game.py` builds it into
+`libffx_vk_linux.so` next to `astralchain` (`tools/ffx_vk_linux.py`) and then fetches the DLLs itself. The library
+needs the development files of OpenSSL 3 or later, libdrm, SPIRV-Tools and the SPIR-V headers, and the Vulkan
+registry (Fedora: `openssl-devel libdrm-devel spirv-tools-devel spirv-headers-devel vulkan-headers`); without them
+the build says which header is missing and goes on without FSR 4. `AC_FSR4_LIB` names another file to load. A change
+to `runtime/vk_fsr4.c` wants a run with `AC_UPSCALING=fsr4`, native and upscaled, on an AMD RDNA 2 or newer GPU: its
+log names the library, the upscaler the library made (`fsr4: context ... provider ...`), at start, and the first
+dispatch. Which model AMD's library runs is its own choice from the GPU family; on Linux an AMD integrated GPU it
+gives FSR 3.1 is asked again for FSR 4 Lite (a Ryzen Z1 Extreme; `AC_FSR4_MODEL=lite` asks for Lite on any GPU,
+`=own` never). A refusal is logged with the library's reason, and so are a missing file (`fsr4: ... is missing`) and
+a library that made another upscaler than FSR 4 (on a GPU it does not take AMD's loader makes FSR 3.1 without an
+error): FSR 4 is then off for the run and FSR 3 runs in its place, at the scene's own size too. Take one of the DLLs
+away to see the first; on another GPU `AC_FSR4_ANY_VERSION=1` (test) keeps that FSR 3.1 context, which exercises
+`vk_fsr4.c`'s calls and layouts; run it with `AC_VK_VALIDATION=1`, since the recorder thread, which is off on AMD
+GPUs, records beside the library there.
 
 A change to the cutscene or movie timing (`runtime/frame_rate.c`), the present pacer (`runtime/nvn_api_obj.c`) or the
 audio output (`runtime/ov_audout.c`) wants `.venv\Scripts\python tools\av_sync_test.py build\v101 movie` and the same

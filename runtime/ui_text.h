@@ -56,6 +56,8 @@ typedef enum {
     // the upscaler (vk_dlaa.c), its mode (resolution.c) and the game's anti-aliasing for when none runs
     UI_MENU_UPSCALING, UI_MENU_UPSCALING_DESC, UI_MENU_UPSCALING_DESC_OTHER, UI_MENU_UPSCALING_OFF, UI_MENU_UPSCALING_AUTO,
     UI_MENU_UPSCALING_UNAVAILABLE,
+    UI_MENU_UPSCALING_INSTEAD,   // "not available here: %s in use": FSR 4 cannot run, the named upscaler runs in its place
+    UI_MENU_UPSCALING_MISSING,   // "%s is missing: %s in use": the file FSR 4 needs, and what runs in its place
     UI_MENU_UPSCALING_UNTIL,   // "%s until a restart": what runs while the choice waits for one
     UI_MENU_UPSCALING_QUALITY, UI_MENU_UPSCALING_QUALITY_DESC, UI_MENU_UPSCALING_NATIVE, UI_MENU_DLSS_QUALITY,
     UI_MENU_DLSS_BALANCED, UI_MENU_DLSS_PERFORMANCE, UI_MENU_UPSCALING_ULTRA, UI_MENU_UPSCALING_MODE_OFF,

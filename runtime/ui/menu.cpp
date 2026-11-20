@@ -65,6 +65,7 @@ extern "C" int vk_dlaa_choice_state(const char *up);   // vk_dlaa.h: 0 runs, 1 a
 extern "C" const char *vk_dlaa_upscaler_name(void);     // vk_dlaa.h: the upscaler that runs for the setting, or NULL
 extern "C" const char *vk_dlaa_running(void);           // vk_dlaa.h: the upscaler's name while it runs, NULL when off
 extern "C" int vk_fsr4_offered(void);                   // vk_fsr4.h: an AMD RDNA 2 or newer GPU, the library there
+extern "C" const char *vk_fsr4_missing(void);           // vk_fsr4.h: the file FSR 4 needs that is not there, or NULL
 extern "C" int vk_lowlat_backend(void);                 // vk.h: 0 off, 1 Reflex, 2 Anti-Lag 2, 3 built-in
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
 }
@@ -552,7 +553,8 @@ static void row_output_res(void) {
 // the mode sizes the scene at start. A choice that waits for a restart says what runs until then, one that cannot run
 // here says so; the mode row shows the scene size its value gives at this game resolution. The game's anti-aliasing
 // (SMAA, or off) applies while no upscaler runs and is greyed out otherwise. Off Windows, DLSS and XeSS are not offered;
-// FSR 4 only on an AMD RDNA 2 or newer GPU with its library there.
+// FSR 4 only on an AMD RDNA 2 or newer GPU with its library's files there. FSR 4 that cannot run says what runs in its
+// place and which file it lacks.
 static void rows_upscaling(void) {
 #ifdef _WIN32
     static const char *const vals[] = {"off", "auto", "dlss", "xess", "fsr3", "fsr4"};
@@ -573,10 +575,18 @@ static void rows_upscaling(void) {
     for (int i = 0; i < n; i++)
         if (!strcmp(up, vals[i])) cur = i;
     int state = vk_dlaa_choice_state(up);
-    static char note_up[96];
+    static char note_up[128];
     const char *note = nullptr;
     if (state == 2) {
         note = menu_text(UI_MENU_UPSCALING_UNAVAILABLE);
+        // FSR 4 that cannot run has another upscaler in its place (vk_dlaa.c pick: FSR 3): the note names it, and the
+        // file FSR 4 lacks when that is why
+        if (!strcmp(up, "fsr4") && runs) {
+            const char *missing = vk_fsr4_missing();
+            if (missing) snprintf(note_up, sizeof note_up, menu_text(UI_MENU_UPSCALING_MISSING), missing, runs);
+            else snprintf(note_up, sizeof note_up, menu_text(UI_MENU_UPSCALING_INSTEAD), runs);
+            note = note_up;
+        }
     } else if (state == 1) {
         if (runs) snprintf(note_up, sizeof note_up, menu_text(UI_MENU_UPSCALING_UNTIL), runs), note = note_up;
         else note = menu_text(UI_MENU_AFTER_RESTART);

@@ -8,7 +8,9 @@ The same model as the Windows release (tools/make_release.py, whose download cac
 folder carries the setup and a toolchain, never game code; the player's machine builds the game. Everything that runs on
 the player's machine is built against the Steam Runtime 3 "sniper" SDK sysroot (glibc 2.31), so the AppImage and the
 game it builds run on SteamOS and on any distribution at least as new. Needs network access on the first run, make,
-the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
+the .NET 10 SDK, Python 3.12+ with Pillow (.venv) and Perl with the modules OpenSSL's Configure loads (Debian's perl
+has them; Fedora: perl-FindBin perl-IPC-Cmd perl-File-Compare perl-File-Copy perl-Pod-Usage perl-Time-Piece perl-lib).
+The folder holds:
 
     python/    python-build-standalone 3.14 (with tkinter) + the packages of tools/requirements-installer.txt; a .pth
                file puts the folder, tools/ and recomp/ on sys.path
@@ -18,7 +20,11 @@ the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
                runtime headers, romfs.c, patches.c and ov_zstd.c (compiled per install), astralchain.png (the window
                icon), deps/ (Vulkan headers 1.4.363, VMA, zstd built static; SDL3, Opus and libvpx come from the
                sysroot)
-    bin/       ac_xlate (+ .id), hactool, ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself)
+    bin/       ac_xlate (+ .id), hactool, ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself),
+               AMD FSR 4 (runtime/vk_fsr4.c): AMD's signed amd_fidelityfx_loader_vk.dll and
+               amd_fidelityfx_upscaler_vk.dll (tools/fsr4_sdk.py's pins, the Windows release's files) and
+               libffx_vk_linux.so, which runs them (runtime/third_party/ffx-vk-linux; OpenSSL's libcrypto and
+               SPIRV-Tools inside it)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, astralchain.ini.example, VERSION
     AppRun, astralchain-setup.desktop, astralchain-setup.png   the AppImage entry: python/bin/python3 -m installer.gui
     recomplauncher.json   at the AppDir root, where RecompLauncher reads it from the AppImage without mounting it
@@ -44,6 +50,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_game  # noqa: E402
 import ffx_sdk  # noqa: E402
+import ffx_vk_linux  # noqa: E402
+import fsr4_sdk  # noqa: E402
 import make_release as mr  # noqa: E402
 
 ROOT = mr.ROOT
@@ -62,6 +70,8 @@ CHECK = MAIN_ROOT / 'build' / 'release-linux-check'
 LLVM_VERSION = '23.1.5'
 LLVM_MAJOR = LLVM_VERSION.split('.')[0]
 SNIPER = '3.0.20261021.266025'
+OPENSSL_VERSION = '3.5.9'   # an LTS series; only libcrypto, inside libffx_vk_linux.so (build_openssl)
+VULKAN_HEADERS = 'Vulkan-Headers-1.4.363'
 SNIPER_URL = 'https://repo.steampowered.com/steamrt-images-sniper/snapshots'
 PINS = {
     'llvm-linux': (f'https://github.com/llvm/llvm-project/releases/download/llvmorg-{LLVM_VERSION}/'
@@ -85,6 +95,9 @@ PINS = {
     'vulkan-headers-src': ('https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.363.tar.gz',
                            'cbaf687d3c59b9666fe080e7f8396b6b4f4d344a768ee6b337c59852f4526b68'),
     'vma-header': build_game.VMA_FETCH,
+    'openssl-src': (f'https://github.com/openssl/openssl/releases/download/openssl-{OPENSSL_VERSION}/'
+                    f'openssl-{OPENSSL_VERSION}.tar.gz',
+                    '603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a'),
     # appimagetool and the type-2 runtime from release tags, not "continuous", whose uploads change under the same
     # URL and would stop the build at the hash check
     'appimagetool': ('https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage',
@@ -102,7 +115,7 @@ SNIPER_MEMBERS = ['usr/include', 'usr/share/pkgconfig', 'usr/lib/x86_64-linux-gn
                   'lib/x86_64-linux-gnu', 'lib64', 'usr/share/doc/libsdl3-0', 'usr/share/doc/libopus0',
                   'usr/share/doc/libvpx6', 'usr/share/doc/libc6', 'usr/share/doc/gcc-10-base',
                   'usr/share/doc/libvulkan1',
-                  'usr/share/doc/libxft2', 'usr/share/doc/libxrender1']
+                  'usr/share/doc/libxft2', 'usr/share/doc/libxrender1', 'usr/share/doc/spirv-tools']
 # glibc's link libraries and their scripts (lib<name>.so, .a, _nonshared.a), and the GCC runtime pieces clang links.
 GLIBC_LIBS = ['c', 'm', 'mvec', 'dl', 'pthread', 'rt', 'util']
 GCC_LIBS = {'libgcc.a', 'libgcc_eh.a', 'libgcc_s.so', 'libstdc++.a', 'libsupc++.a'}
@@ -243,10 +256,10 @@ def full_sysroot():
     """The sniper SDK's x86_64 compile and link files in toolchain/release-work/sniper, absolute symlinks made relative
     (the SDK points some at /lib and /usr/lib, which outside its container are the host's)."""
     root = WORK / 'sniper'
-    if (root / '.relinked').is_file() and (root / 'usr/share/doc/libxft2/copyright').is_file():
+    if (root / '.relinked').is_file() and (root / 'usr/share/doc/spirv-tools/copyright').is_file():
         return root
     # Older cached SDK extractions omitted the font libraries' architecture-independent pkg-config files and the
-    # libXft and libXrender copyright files.
+    # libXft, libXrender and SPIRV-Tools copyright files.
     (root / '.unpacked').unlink(missing_ok=True)
     tar_extract('sniper-sdk', root, SNIPER_MEMBERS)
     for p in root.rglob('*'):
@@ -264,12 +277,62 @@ def sysroot_cc(llvm, sysroot):
 
 # ---- runtime/deps, bin/ --------------------------------------------------------------------------------------------
 
+def vulkan_headers():
+    """The pinned Vulkan headers (include/ and the licence) unpacked in the work folder."""
+    return tar_extract('vulkan-headers-src', WORK / 'vulkan-headers', [f'{VULKAN_HEADERS}/include',
+                                                                       f'{VULKAN_HEADERS}/LICENSE.md'], strip=1)
+
+
+def build_openssl(llvm, sysroot):
+    """The pinned OpenSSL's libcrypto.a, position-independent, with its headers, for libffx_vk_linux.so (build_fsr4):
+    ffx-vk-linux checks the signatures of AMD's DLLs with OpenSSL 3's API. The sniper sysroot has OpenSSL 1.1.1, whose
+    shared library distributions of the last years no longer install, and no OpenSSL soname is on every target, so
+    libcrypto goes into the library. Returns the source folder (include/ and libcrypto.a in it)."""
+    src = tar_extract('openssl-src', WORK / 'openssl', [f'openssl-{OPENSSL_VERSION}'], strip=1)
+    if not (src / 'libcrypto.a').is_file():
+        env = dict(os.environ, CC=sysroot_cc(llvm, sysroot), AR=str(llvm / 'bin' / 'llvm-ar'),
+                   RANLIB=str(llvm / 'bin' / 'llvm-ranlib'))
+        t0 = time.time()
+        run(['./Configure', 'linux-x86_64', 'no-shared', 'no-tests', 'no-apps', 'no-docs', 'no-module', '-fPIC'],
+            cwd=src, env=env, stdout=subprocess.DEVNULL)
+        # two runs: as goals of one parallel make, objects compile before the generated headers exist and read the
+        # sysroot's OpenSSL 1.1.1 headers in their place
+        for goal in ('build_generated', 'libcrypto.a'):
+            run(['make', f'-j{os.cpu_count() or 4}', goal], cwd=src, env=env, stdout=subprocess.DEVNULL)
+        print(f'openssl: libcrypto.a built in {time.time() - t0:.0f} s')
+    return src
+
+
+def build_fsr4(b, llvm, sysroot):
+    """AMD FSR 4 on Linux (runtime/vk_fsr4.c) into bin/: AMD's two signed DLLs of the pinned FSR SDK, the files the
+    Windows release ships, and libffx_vk_linux.so, which runs them in the Linux game (runtime/third_party/ffx-vk-linux,
+    built by tools/ffx_vk_linux.py). The library is built like the game: the folder's clang, the sniper sysroot (glibc
+    2.31; its libstdc++, libdrm and libdrm_amdgpu stay shared, every Mesa system has them), with what no target is sure
+    to have inside it: OpenSSL's libcrypto (build_openssl) and the sysroot's static SPIRV-Tools, their symbols not
+    exported (--exclude-libs) so they meet no other copy in the game's process. -include limits.h: glibc 2.31 declares
+    PTHREAD_STACK_MIN there only, and win32_runtime.cpp, which is not changed here, includes pthread.h alone."""
+    ssl = build_openssl(llvm, sysroot)
+    registry = tar_extract('vulkan-headers-src', WORK / 'vulkan-registry', [f'{VULKAN_HEADERS}/registry/vk.xml'],
+                           strip=1) / 'registry' / 'vk.xml'
+    flags = ['--target=x86_64-linux-gnu', f'--sysroot={sysroot}', '-fuse-ld=lld', '-Wno-unused-command-line-argument',
+             '-include', 'limits.h',
+             f'-I{ssl / "include"}', f'-I{vulkan_headers() / "include"}', '-I=/usr/include/libdrm']
+    link = ['-ldl', '-lpthread', ssl / 'libcrypto.a', '-l:libSPIRV-Tools.a', '-ldrm_amdgpu', '-ldrm',
+            '-Wl,--exclude-libs,ALL']
+    lib = ffx_vk_linux.build(WORK / 'ffx-vk-linux', llvm / 'bin' / 'clang++', flags, link, registry, quiet=True)
+    if not lib:
+        sys.exit('make_release_linux: libffx_vk_linux.so was not built (the reason is above)')
+    shutil.copy2(lib, b / ffx_vk_linux.LIB)
+    run([llvm / 'bin' / 'llvm-strip', '--strip-unneeded', b / ffx_vk_linux.LIB])
+    for dll in fsr4_sdk.DLLS:
+        shutil.copy2(mr.fsr4_dir() / dll, b / dll)
+
+
 def build_deps(out, llvm, sysroot):
     d = out / 'runtime' / 'deps'
     (d / 'include' / 'vma').mkdir(parents=True, exist_ok=True)
     (d / 'lib').mkdir(parents=True, exist_ok=True)
-    vk = tar_extract('vulkan-headers-src', WORK / 'vulkan-headers', ['Vulkan-Headers-1.4.363/include',
-                                                                     'Vulkan-Headers-1.4.363/LICENSE.md'], strip=1)
+    vk = vulkan_headers()
     for sub in ('vulkan', 'vk_video'):
         shutil.copytree(vk / 'include' / sub, d / 'include' / sub)
     shutil.copy2(mr.fetch('vma-header'), d / 'include' / 'vma' / 'vk_mem_alloc.h')
@@ -299,6 +362,7 @@ def build_bin(out, llvm, sysroot):
     shutil.copy2(xl / 'ac_xlate.id', b / 'ac_xlate.id')
     sdl = (sysroot / 'usr' / 'lib' / 'x86_64-linux-gnu' / 'libSDL3.so.0').resolve()
     shutil.copy2(sdl, b / 'libSDL3.so.0')
+    build_fsr4(b, llvm, sysroot)
 
 
 # ---- runtime/ ----------------------------------------------------------------------------------------------------------
@@ -314,10 +378,9 @@ def runtime_lib(out, llvm, sysroot):
              '--sysroot', sysroot, '--cpu', cpu, '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja',
              '--version', version, '--gen', MAIN_ROOT / 'generated' / version, '--out', build])
         shutil.copy2(build / 'libacrt.a', rt / name)
-    for p in sorted((ROOT / 'runtime').rglob('*')):
-        if p.suffix in mr.RUNTIME_SUFFIXES and p.is_file():
-            (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(p, rt / p.relative_to(ROOT / 'runtime'))
+    for p in mr.runtime_files():
+        (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(p, rt / p.relative_to(ROOT / 'runtime'))
     for name in build_game.INSTALL_SIDE:
         shutil.copy2(ROOT / 'runtime' / name, rt / name)
     from PIL import Image   # Tk loads no .ico off Windows: the window and the AppImage take a PNG
@@ -517,6 +580,11 @@ def collect_licenses(out, sysroot):
         (out / 'python' / 'lib' / f'python{sys_version(out)}' / 'LICENSE.txt', 'python-LICENSE.txt'),
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
         (ffx_sdk.license_path(), 'FidelityFX-SDK-LICENSE.txt'),   # FSR 3's passes (runtime/vk_fsr3.c)
+        # FSR 4 (runtime/vk_fsr4.c, build_fsr4): AMD's signed DLLs, ffx-vk-linux, and what is linked into its library
+        (mr.fsr4_dir() / 'LICENSE.txt', 'FidelityFX-SDK-2-LICENSE.txt'),
+        (ROOT / 'runtime' / 'third_party' / 'ffx-vk-linux' / 'LICENSE', 'ffx-vk-linux-LICENSE.txt'),
+        (WORK / 'openssl' / 'LICENSE.txt', 'openssl-LICENSE.txt'),
+        (doc / 'spirv-tools' / 'copyright', 'spirv-tools-copyright.txt'),
         (WORK / 'hactool-linux' / 'LICENSE', 'hactool-LICENSE.txt'),
         (MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt'),
     ]
@@ -672,6 +740,8 @@ def prove(out, cpu='v3'):
     # copyfile, not copy2: the check dir may sit on a 9p mount (WSL /mnt/c), whose utime/rename semantics break
     # copystat; only the bytes matter here.
     shutil.copyfile(out / 'bin' / 'libSDL3.so.0', chk / 'libSDL3.so.0')
+    for name in (ffx_vk_linux.LIB, *fsr4_sdk.DLLS):   # AMD FSR 4, where the installer puts them
+        shutil.copyfile(out / 'bin' / name, chk / name)
     # The folder's translator beside the game, where the installer puts it (installer/steps.py): the repository's
     # build/xlate holds the Windows ac_xlate.exe only, so without it the shader probes find no translator and pass only
     # on what an earlier run left in the check dir's shader cache.

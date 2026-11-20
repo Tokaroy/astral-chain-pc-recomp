@@ -301,7 +301,9 @@ int res_output_grid(const char *o, unsigned *w, unsigned *h) {
 // ---- the upscaler at start, before the device exists (resolution.c cannot ask NGX or XeSS yet): what upscaling
 // (cfg.c cfg_upscaling) will run, judged from the settings and the files next to the executable. vk_dlaa.c answers for
 // real once the device is up (res_settle). DLSS needs nvngx_dlss.dll from NVIDIA beside astralchain.exe, XeSS
-// libxess.dll, both Windows libraries; FSR 3 is built in, so auto (DLSS where it can run, else FSR 3) always has one.
+// libxess.dll, both Windows libraries; FSR 3 is built in, so auto (DLSS where it can run, else FSR 3) and fsr4 (FSR 4
+// where it can run, else FSR 3) always have one.
+#ifdef _WIN32
 static int beside_exe(const char *name) {
     char exe[1024], path[1100];
     if (!plat_exe_path(exe, sizeof exe)) return 0;
@@ -310,16 +312,12 @@ static int beside_exe(const char *name) {
     snprintf(path, sizeof path, "%.*s/%s", (int)(last - exe), exe, name);
     return plat_file_exists(path);
 }
+#endif
 
 static int upscaler_at_start(void) {
     const char *up = cfg_upscaling();
-    if (!strcmp(up, "fsr3") || !strcmp(up, "auto")) return 1;
-    if (!strcmp(up, "fsr4") && cfg_get("AC_FSR4_LIB") && *cfg_get("AC_FSR4_LIB")) return 1;
-#ifdef _WIN32
-    if (!strcmp(up, "fsr4")) return beside_exe("amd_fidelityfx_loader_vk.dll");
-#else
-    if (!strcmp(up, "fsr4")) return beside_exe("amd_fidelityfx_upscaler_vk.so");
-#endif
+    // fsr4: FSR 4, or FSR 3 in its place where it cannot run (vk_dlaa.c pick)
+    if (!strcmp(up, "fsr3") || !strcmp(up, "auto") || !strcmp(up, "fsr4")) return 1;
 #ifdef _WIN32
     if (!strcmp(up, "dlss")) return beside_exe("nvngx_dlss.dll");
     if (!strcmp(up, "xess")) return beside_exe("libxess.dll");

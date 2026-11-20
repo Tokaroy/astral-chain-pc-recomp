@@ -1,9 +1,10 @@
 // AMD FSR 4 (vk_fsr4.c): AMD FSR Upscaling 4 (the ML upscaler) as the scene's temporal upscaler, at its own size (Native
 // AA) or from a smaller scene, behind AC_UPSCALING=fsr4 (astralchain.ini upscaling = fsr4). vk_dlaa.c finds the scene,
 // jitters it, makes its motion vectors and calls vk_fsr4_evaluate where the upscaler runs; this file only talks to AMD's
-// FSR API (ffxCreateContext / ffxDispatch), loaded at run time from beside the executable: on Windows
-// amd_fidelityfx_loader_vk.dll with amd_fidelityfx_upscaler_vk.dll next to it (AMD's signed DLLs of the FSR SDK 2.4.0,
-// FSR 4.1.2, shipped with the release), elsewhere amd_fidelityfx_upscaler_vk.so, which the player puts there.
+// FSR API (ffxCreateContext / ffxDispatch), loaded at run time from beside the executable: amd_fidelityfx_loader_vk.dll
+// with amd_fidelityfx_upscaler_vk.dll next to it (AMD's signed DLLs of the FSR SDK 2.4.0, FSR 4.1.2), on Windows
+// directly, on Linux through ffx-vk-linux (libffx_vk_linux.so, which runs the same DLLs). Where FSR 4 cannot run (a
+// file missing, a GPU AMD's library does not take), vk_dlaa.c has FSR 3 run in its place.
 #pragma once
 #include "vk.h"
 
@@ -12,7 +13,13 @@ int vk_fsr4_tried(void);       // the library was looked for in this run (it was
 void vk_fsr4_init(void);       // vk_dlaa_init, the device up: loads the library when the setting is fsr4
 int vk_fsr4_available(void);   // loaded and not failed in this run (a library that made another upscaler than FSR 4
                                // for this GPU has failed)
-int vk_fsr4_offered(void);     // the menu lists FSR 4: an AMD RDNA 2 or newer GPU, the library there (after init)
+int vk_fsr4_offered(void);     // the menu lists FSR 4: an AMD RDNA 2 or newer GPU, the library's files there (after init)
+const char *vk_fsr4_missing(void);   // the name of the file FSR 4 needs that is not beside the executable, NULL when
+                                     // none is missing (after init)
+
+// boot.c through vk_dlaa_warm, the sizes settled and no frame made yet: makes the context of this scene size (w x h),
+// output size (ow x oh) and colour kind, so its cost (the library compiles its shaders) is not paid at the first frame.
+void vk_fsr4_warm(uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, int hdr);
 
 typedef struct {
     VkImage image;

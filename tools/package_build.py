@@ -85,8 +85,11 @@ def main():
         copy(build / d, out / d)
     if os.name == 'nt' and (build / 'libxess.dll').exists():   # Intel XeSS (xess = 1), optional
         copy(build / 'libxess.dll', out / 'libxess.dll')
-    for dll in ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll'):   # AMD FSR 4, optional
-        if os.name == 'nt' and (build / dll).exists():
+    # AMD FSR 4, optional: AMD's DLLs on both systems, and on Linux the library that runs them (ffx-vk-linux)
+    fsr4 = ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll') + (() if os.name == 'nt'
+                                                                                 else ('libffx_vk_linux.so',))
+    for dll in fsr4:
+        if (build / dll).exists():
             copy(build / dll, out / dll)
     copy(a.xlate, out / f'ac_xlate{EXE}')
     idf = a.xlate.with_suffix('.id')

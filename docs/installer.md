@@ -175,7 +175,9 @@ recomp/, tools/       the lifter and the extraction, build and patch scripts the
 llvm/                 llvm-mingw, x86_64-only subset (Apache-2.0 with LLVM exception; mingw-w64 parts permissive)
 runtime/              libacrt.a, libacrt-v2.a, the headers the generated code and modules.c/romfs.c/patches.c include,
                       and deps/ (Vulkan, SDL3, Opus, libvpx headers and import libraries)
-bin/                  ac_xlate.exe (+ .id), hactool.exe, SDL3.dll, libopus-0.dll, libxess.dll, ninja.exe
+bin/                  ac_xlate.exe (+ .id), hactool.exe, SDL3.dll, libopus-0.dll, libxess.dll, ninja.exe, and AMD FSR 4:
+                      amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll (the Linux release has the same
+                      two DLLs with libffx_vk_linux.so, which runs them)
 licenses/             the licence files of everything bundled
 THIRD_PARTY_NOTICES.md
 astralchain.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)

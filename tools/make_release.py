@@ -118,6 +118,16 @@ TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'check_content.py', 'exefs_p
                'shader_census.py']
 TOOLS_DIRS = ['data']   # data/: the expected hashes of the base game and the update, pgo/ the profiles
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
+# runtime/ folders whose headers no install-side compile reads: ffx-vk-linux is built into libffx_vk_linux.so here, and
+# the Linux release ships that library (bin/), not its sources
+RUNTIME_SKIP = ('third_party/ffx-vk-linux',)
+
+
+def runtime_files():
+    """The runtime/ files a release carries for the installer's compile (RUNTIME_SUFFIXES, RUNTIME_SKIP aside)."""
+    base = ROOT / 'runtime'
+    return [p for p in sorted(base.rglob('*')) if p.suffix in RUNTIME_SUFFIXES and p.is_file()
+            and not any(p.relative_to(base).as_posix().startswith(skip + '/') for skip in RUNTIME_SKIP)]
 
 PROBES = ['--probe-kernel', '--probe-vkexec', '--probe-nvn-tex', '--probe-shader', '--probe-xess', '--probe-latency']
 
@@ -437,10 +447,9 @@ def runtime_lib(out, llvm):
              '--gen', gen, '--out', build],
             env=clean_env(llvm / 'bin', out / 'bin'))
         shutil.copy2(build / 'libacrt.a', rt / name)
-    for p in sorted((ROOT / 'runtime').rglob('*')):
-        if p.suffix in RUNTIME_SUFFIXES and p.is_file():
-            (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(p, rt / p.relative_to(ROOT / 'runtime'))
+    for p in runtime_files():
+        (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(p, rt / p.relative_to(ROOT / 'runtime'))
     for name in ('romfs.c', 'patches.c', 'ov_zstd.c'):   # build_game.py INSTALL_SIDE
         shutil.copy2(ROOT / 'runtime' / name, rt / name)
 

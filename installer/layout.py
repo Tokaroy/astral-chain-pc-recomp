@@ -127,10 +127,12 @@ def release_layout(root):
         runtime_lib_v2=root / 'runtime' / 'libacrt-v2.a',
         ninja=root / 'bin' / ('ninja' + EXE), hactool=root / 'bin' / ('hactool' + EXE),
         xlate=root / 'bin' / ('ac_xlate' + EXE),
-        # libxess.dll: Intel XeSS (runtime/vk_xess.c); amd_fidelityfx_*_vk.dll: AMD FSR 4 (runtime/vk_fsr4.c); Windows only
+        # libxess.dll: Intel XeSS (runtime/vk_xess.c), Windows only; amd_fidelityfx_*_vk.dll: AMD FSR 4
+        # (runtime/vk_fsr4.c), AMD's signed DLLs on both systems, which libffx_vk_linux.so runs on Linux
         dlls=(root / 'bin' / 'SDL3.dll', root / 'bin' / 'libopus-0.dll', root / 'bin' / 'libxess.dll',
               root / 'bin' / 'amd_fidelityfx_loader_vk.dll', root / 'bin' / 'amd_fidelityfx_upscaler_vk.dll') if WIN
-        else (root / 'bin' / 'libSDL3.so.0',),
+        else (root / 'bin' / 'libSDL3.so.0', root / 'bin' / 'libffx_vk_linux.so',
+              root / 'bin' / 'amd_fidelityfx_loader_vk.dll', root / 'bin' / 'amd_fidelityfx_upscaler_vk.dll'),
         shader_answers=root / 'data' / 'shader-answers.bin', ini_example=root / 'astralchain.ini.example',
         # Linux: None, the install folder's .setup-temp (installer/cli.py): the AppImage is mounted read-only, and on
         # a Steam Deck /home is often too full for the generated C while the install folder is on the SD card
