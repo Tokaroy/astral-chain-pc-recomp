@@ -24,7 +24,7 @@ that never returns is dropped: the emitted code holds nothing ready for after su
 With --patches, the spin waits of the table (recomp/patches.py `spin`) are emitted with their gates, and functions
 that hold one come first (a quarter of the picks at most); a case whose loop does not leave runs into --steps.
 
-Usage: func.py [--exefs DIR] [--modules main,subsdk0,sdk] [--functions N] [--cases K] [--seed S] [--jobs J]
+Usage: func.py [--exefs DIR] [--modules main,sdk] [--functions N] [--cases K] [--seed S] [--jobs J]
                [--patches FILE] [--abi-trust --ipa FILE]
 """
 import argparse
@@ -351,8 +351,8 @@ class Runner:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--exefs', type=Path, default=ROOT / 'build' / 'extracted' / 'v121' / 'exefs')
-    ap.add_argument('--modules', default='main,subsdk0,sdk')
+    ap.add_argument('--exefs', type=Path, default=ROOT / 'build' / 'extracted' / 'v101' / 'exefs')
+    ap.add_argument('--modules', help='comma-separated (default: every lifted module of the ExeFS)')
     ap.add_argument('--functions', type=int, default=400, help='per module')
     ap.add_argument('--cases', type=int, default=12, help='random states tried per function')
     ap.add_argument('--steps', type=int, default=200000, help='Unicorn instruction cap per case')
@@ -372,7 +372,7 @@ def main():
     args = ap.parse_args()
     r = random.Random(args.seed)
     t0 = time.time()
-    want = args.modules.split(',')
+    want = args.modules.split(',') if args.modules else None
 
     work = args.work
     work.mkdir(parents=True, exist_ok=True)
@@ -384,7 +384,7 @@ def main():
     T = ipa.Tables.load(args.ipa) if args.abi_trust else None
     trust = {'abi_trust': True, 'ipa': T} if T else {}
     for name, base, _ in mods:
-        if name not in want:
+        if want is not None and name not in want:
             continue
         mod = Module(name, args.exefs / name, base, 'c')
         img = work / f'{name}.img'

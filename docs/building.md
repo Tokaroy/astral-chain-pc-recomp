@@ -290,8 +290,9 @@ change passes these, all run with `.venv`:
 | `tests\diff\atomic.py` | exclusive load/store sequences and ARMv8.1 atomics | no |
 | `tests\diff\func.py` | whole functions as the generator emits them, loops, jump tables and calls included (calls go to a stub that checks the registers at the call); `--abi-trust --ipa generated\v101\ipa.json` for the default lift's register syncs, without them for `gen.py --no-abi-trust` | yes |
 | `tests\flags_check.py` | the function-local flag helpers of `runtime\cpu.h` against its packed ones | no |
-| `tests\excl_mt.py` | the exclusive monitor helpers under contention and ABA, on several threads | no |
-| `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
+| `tests\excl_mt.py` | the exclusive monitor helpers under contention, a changed value and a restored one (ABA, which the compare-and-swap does not see: reported, not failed), on several threads | no |
+| `tests\excl_windows.py` | every exclusive window of the game's modules computes from registers alone (no memory access or call between the load and the store exclusive), the condition under which the compare-and-swap of `cpu.h` behaves as hardware; must report 0 windows | yes |
+| `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements and 0 unverified bases | yes |
 | `tests\vlocals_check.py` | the V-locals syncs (`recomp/vlocals.py`) on the lifted chunks of `generated\v101`, the patch helper calls included, which `tests\diff\func.py` never emits; must report 0 violations | yes |
 
 A `--cpu v2` build passes the same differential tests with `--cflags=-march=x86-64-v2`; they compile `runtime/fma.c`

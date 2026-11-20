@@ -1,8 +1,9 @@
 """installer/ bookkeeping with fake steps: fresh install, resume after a failure or cancel, transient steps, update
 with a newer release, the game-file containers (NSP, XCI), astralchain.ini, the event stream, and what a launcher
-uses: progress lines, --lang auto and recomplauncher.json. No game files, no tools; stdlib only.
+uses: progress lines, --lang auto and recomplauncher.json. No game files, no tools. Needs the installer's packages
+(cryptography, which tools/extract.py imports), as .venv has them.
 
-Run: python tests/installer_test.py
+Run: .venv\Scripts\python tests/installer_test.py
 """
 import io
 import json

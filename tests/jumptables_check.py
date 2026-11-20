@@ -11,11 +11,17 @@ as 'oracle wrong' only with independent evidence (oracle_wrong). Samples of ever
 unresolved computed site are printed with disassembly. Output also goes to build/logs/jumptables-check.log, and one
 row per table-like br to build/logs/jumptables-<module>.tsv.
 
+A hoisted base the reaching definitions cannot prove (the function has an unresolved computed branch, or uses the
+register for other values elsewhere) still counts as good when the oracle finds the resolver's targets ('base
+confirmed by the oracle'). Astral Chain 1.0.1 has one such table in main and one in sdk. The table read is the
+indexed load whose result the branch target's add uses (table_load): taking the last indexed load instead left
+three good tables of 1.0.1 unverified, where the compiler had put another indexed load between it and the br.
+
 The oracle is adapted from LAS Recomp tools/gen.py @ da35b83 (MIT, Copyright (c) 2026 Peiikai).
 
 Exits with 1 if any disagreement is unexplained, a hoisted base is not verified, or a PLT stub counts as computed.
 
-Usage: jumptables_check.py [--exefs DIR] [--modules main,sdk,subsdk0] [--samples N] [--no-oracle]
+Usage: jumptables_check.py [--exefs DIR] [--modules main,sdk] [--samples N] [--no-oracle]
 """
 import argparse
 import bisect
@@ -366,15 +372,24 @@ class FunctionCheck:
 
 
 def table_load(mod, s, br):
-    """Last register-offset load in [s, br): the table read of a dispatch block."""
+    """The table read of a dispatch block: the register-offset load in [s, br) whose result the `add` that makes the
+    branch target uses, else the last register-offset load. The compiler may schedule another indexed load into the
+    block between the table read and the br (sdk+0x4d9d14 in Astral Chain 1.0.1: `ldr x24, [x8, x10, lsl #3]`)."""
+    jump = _insn(mod, br - 4)
+    feeds = set()
+    if jump is not None and jump.mnemonic == 'add' and len(jump.operands) == 3:
+        feeds = {_regno(jump.reg_name(op.reg)) for op in jump.operands[1:] if op.type == capstone.arm64.ARM64_OP_REG}
+    last = None
     a = br
     while a > s:
         a -= 4
         ins = _insn(mod, a)
         if ins and ins.mnemonic.startswith('ldr') and len(ins.operands) == 2 \
                 and ins.operands[1].type == capstone.arm64.ARM64_OP_MEM and ins.operands[1].mem.index:
-            return ins
-    return None
+            if _regno(ins.reg_name(ins.operands[0].reg)) in feeds:
+                return ins
+            last = last or ins
+    return last
 
 
 def hoisted_base(fc, br):
@@ -698,8 +713,8 @@ def window(mod, br, entry, n=24):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--exefs', default=str(ROOT / 'build' / 'extracted' / 'v121' / 'exefs'))
-    ap.add_argument('--modules', default='main,sdk,subsdk0')
+    ap.add_argument('--exefs', default=str(ROOT / 'build' / 'extracted' / 'v101' / 'exefs'))
+    ap.add_argument('--modules', help='comma-separated (default: every lifted module of the ExeFS)')
     ap.add_argument('--samples', type=int, default=8)
     ap.add_argument('--no-oracle', action='store_true')
     args = ap.parse_args()
@@ -712,7 +727,7 @@ def main():
 
     bases = {n: b for n, b, _ in layout.layout(args.exefs)}
     failed = 0
-    for name in args.modules.split(','):
+    for name in args.modules.split(',') if args.modules else bases:
         mod = Module(name, Path(args.exefs) / name, bases[name])
         starts = function_starts(mod)
         brs = (mod.lo + 4 * np.nonzero((mod.words & 0xFFFFFC1F) == 0xD61F0000)[0]).tolist()
@@ -744,11 +759,18 @@ def main():
                 stats['resolved'] += 1
                 stats['entries'] += len(ours)
                 reg, _, verdict = hoisted_base(fc, br)
-                stats[f'base {verdict}' if verdict in ('local', 'verified') else 'base not verified'] += 1
+                if verdict in ('local', 'verified'):
+                    base = f'base {verdict}'
+                elif orc is not None and ours == orc:
+                    base = 'base confirmed by the oracle'
+                else:
+                    base = 'base not verified'
+                stats[base] += 1
                 if verdict not in ('local', 'verified'):
-                    samples.setdefault('base not verified', []).append((br, entry, end, ours, orc))
+                    if base == 'base not verified':
+                        samples.setdefault(base, []).append((br, entry, end, ours, orc))
                     rows.write(f'{br - mod.base:x}\t{entry - mod.base:x}\t{end - mod.base:x}\t-\t-\t-\t'
-                               f'base x{reg}: {verdict}\n')
+                               f'{base}, x{reg}: {verdict}\n')
                 if not comp:
                     stats['resolved, not computed'] += 1
                     samples.setdefault('resolved, not computed', []).append((br, entry, end, ours, orc))
@@ -784,7 +806,8 @@ def main():
         for k in ('br', 'computed', 'resolved', 'entries', 'oracle resolved', 'agree', 'disagree', 'oracle wrong',
                   'only resolver', 'only oracle', 'only oracle, oracle wrong', 'computed, unresolved',
                   'resolved, not computed', 'targets outside function', 'base local', 'base verified',
-                  'base not verified', 'PLT stubs', 'PLT stubs computed or resolved'):
+                  'base confirmed by the oracle', 'base not verified', 'PLT stubs',
+                  'PLT stubs computed or resolved'):
             out(f'  {k:32s} {stats[k]}')
         failed += stats['disagree'] + stats['base not verified'] + stats['PLT stubs computed or resolved']
         out(f'  {"resolver time":32s} {t_res:.2f} s')

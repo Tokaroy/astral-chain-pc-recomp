@@ -10,7 +10,7 @@ every distinct word instead of testing.
 
 Adapted from LAS Recomp tools/test_lift.py @ da35b83 (MIT, Copyright (c) 2026 Peiikai).
 
-Usage: lift.py [--exefs DIR] [--modules main,sdk,subsdk0] [--encodings N] [--cases K] [--seed S] [--jobs J]
+Usage: lift.py [--exefs DIR] [--modules main,sdk] [--encodings N] [--cases K] [--seed S] [--jobs J]
        lift.py --coverage
 """
 import argparse
@@ -156,8 +156,8 @@ def make_case(r, w):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--exefs', type=Path, default=ROOT / 'build' / 'extracted' / 'v121' / 'exefs')
-    ap.add_argument('--modules', default='main,sdk,subsdk0')
+    ap.add_argument('--exefs', type=Path, default=ROOT / 'build' / 'extracted' / 'v101' / 'exefs')
+    ap.add_argument('--modules', help='comma-separated (default: the modules of BASES the ExeFS holds)')
     ap.add_argument('--encodings', type=int, default=20000, help='per module')
     ap.add_argument('--cases', type=int, default=3, help='random states per encoding')
     ap.add_argument('--seed', type=int, default=1)
@@ -169,7 +169,7 @@ def main():
     args = ap.parse_args()
     r = random.Random(args.seed)
     t0 = time.time()
-    names = args.modules.split(',')
+    names = args.modules.split(',') if args.modules else [n for n in BASES if (args.exefs / n).is_file()]
     if args.coverage:
         for name in names:
             coverage(name, Nso(str(args.exefs / name)), BASES[name])
