@@ -85,6 +85,9 @@ def main():
         copy(build / d, out / d)
     if os.name == 'nt' and (build / 'libxess.dll').exists():   # Intel XeSS (xess = 1), optional
         copy(build / 'libxess.dll', out / 'libxess.dll')
+    for dll in ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll'):   # AMD FSR 4, optional
+        if os.name == 'nt' and (build / dll).exists():
+            copy(build / dll, out / dll)
     copy(a.xlate, out / f'ac_xlate{EXE}')
     idf = a.xlate.with_suffix('.id')
     if idf.exists():

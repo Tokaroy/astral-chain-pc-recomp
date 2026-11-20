@@ -64,6 +64,7 @@ void cheats_frame(uint64_t frame);   // cheats.c
 extern "C" int vk_dlaa_choice_state(const char *up);   // vk_dlaa.h: 0 runs, 1 after restart, 2 not available
 extern "C" const char *vk_dlaa_upscaler_name(void);     // vk_dlaa.h: the upscaler that runs for the setting, or NULL
 extern "C" const char *vk_dlaa_running(void);           // vk_dlaa.h: the upscaler's name while it runs, NULL when off
+extern "C" int vk_fsr4_offered(void);                   // vk_fsr4.h: an AMD RDNA 2 or newer GPU, the library there
 extern "C" int vk_lowlat_backend(void);                 // vk.h: 0 off, 1 Reflex, 2 Anti-Lag 2, 3 built-in
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
 }
@@ -550,22 +551,26 @@ static void row_output_res(void) {
 // upscaler is live among those that can run in this run (NGX and libxess.dll load at start for the choice made then);
 // the mode sizes the scene at start. A choice that waits for a restart says what runs until then, one that cannot run
 // here says so; the mode row shows the scene size its value gives at this game resolution. The game's anti-aliasing
-// (SMAA, or off) applies while no upscaler runs and is greyed out otherwise. Off Windows, DLSS and XeSS are not offered.
+// (SMAA, or off) applies while no upscaler runs and is greyed out otherwise. Off Windows, DLSS and XeSS are not offered;
+// FSR 4 only on an AMD RDNA 2 or newer GPU with its library there.
 static void rows_upscaling(void) {
 #ifdef _WIN32
-    static const char *const vals[] = {"off", "auto", "dlss", "xess", "fsr3"};
+    static const char *const vals[] = {"off", "auto", "dlss", "xess", "fsr3", "fsr4"};
     const char *names[] = {menu_text(UI_MENU_UPSCALING_OFF), menu_text(UI_MENU_UPSCALING_AUTO), "NVIDIA DLSS",
-                           "Intel XeSS", "AMD FSR 3"};
+                           "Intel XeSS", "AMD FSR 3", "AMD FSR 4"};
     const UiTextId desc = UI_MENU_UPSCALING_DESC;
 #else
-    static const char *const vals[] = {"off", "auto", "fsr3"};
-    const char *names[] = {menu_text(UI_MENU_UPSCALING_OFF), menu_text(UI_MENU_UPSCALING_AUTO), "AMD FSR 3"};
+    static const char *const vals[] = {"off", "auto", "fsr3", "fsr4"};
+    const char *names[] = {menu_text(UI_MENU_UPSCALING_OFF), menu_text(UI_MENU_UPSCALING_AUTO), "AMD FSR 3",
+                           "AMD FSR 4"};
     const UiTextId desc = UI_MENU_UPSCALING_DESC_OTHER;
 #endif
     enum { N = sizeof vals / sizeof *vals };
     const char *up = cfg_upscaling(), *runs = vk_dlaa_upscaler_name();
+    // FSR 4, the last entry, only on a GPU it can run on (vk_fsr4.c), or while it is the setting (to say it cannot)
+    const int n = vk_fsr4_offered() || !strcmp(up, "fsr4") ? N : N - 1;
     int cur = -1;
-    for (int i = 0; i < N; i++)
+    for (int i = 0; i < n; i++)
         if (!strcmp(up, vals[i])) cur = i;
     int state = vk_dlaa_choice_state(up);
     static char note_up[96];
@@ -578,7 +583,7 @@ static void rows_upscaling(void) {
     } else if (!strcmp(up, "auto") && runs) {
         snprintf(note_up, sizeof note_up, menu_text(UI_MENU_PRESENT_IN_USE), runs), note = note_up;
     }
-    opt_choice_list("AC_UPSCALING", UI_MENU_UPSCALING, vals, names, N, desc, cur, note);
+    opt_choice_list("AC_UPSCALING", UI_MENU_UPSCALING, vals, names, n, desc, cur, note);
     {
         static const char *const qv[] = {"native", "quality", "balanced", "performance", "ultra_performance"};
         const char *qn[] = {menu_text(UI_MENU_UPSCALING_NATIVE), menu_text(UI_MENU_DLSS_QUALITY),
