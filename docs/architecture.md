@@ -70,7 +70,21 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
 
 - Portable C from MacNativeGames: threads and synchronisation, IPC, memory services, fs/RomFS, time, account, applet, audio renderer and effects. The Apple pieces (mach VM, CommonCrypto, AudioToolbox, GameController) are replaced with Win32 and SDL3.
 - SDK boundary at the `nn::*` function level, matching MacNativeGames. Only `audren:u` and `sm:` are real IPC services.
-- Window, keyboard and mouse: Win32 (`gfx_window.c`, `input_win.c`). Gamepad and audio output: SDL3. Voice: libopus (BSD). Movies: the SDK's `movie::Decoder` is replaced by a host VP9 decoder over libvpx (BSD, static; `runtime/ov_movie.c`), because FFmpeg from MSYS2 is a GPL build.
+- Window, keyboard and mouse: Win32 (`gfx_window.c`, `input_win.c`). Gamepad: SDL3. Audio output: WASAPI on Windows (`audio_out_win.c`), SDL3 elsewhere (`audio_out_sdl.c`). Voice: libopus (BSD). Movies: the SDK's `movie::Decoder` is replaced by a host VP9 decoder over libvpx (BSD, static; `runtime/ov_movie.c`), because FFmpeg from MSYS2 is a GPL build.
+- Sound and 5.1: the game plays everything through `audout:u` (`ov_audout.c`); its Wwise 2019.1 sink asks for stereo,
+  then mixes for the channel count `OpenAudioOut` answered, so `audio_output = 5.1` makes the game mix 5.1 itself
+  (FL FR FC LFE SL SR). The effects, voices and reverbs follow the output; the music is authored stereo and stays in
+  front; the LFE gets nothing. Measured on the new game's opening (radio dialogue over traffic, 2 s RMS, 2026-11-21):
+  fronts 0.069-0.082 in stereo; in 5.1 fronts 0.049-0.059, centre 0.054-0.079, surrounds 0.005-0.026, LFE 0. The
+  voices came out about 3.4 dB louder than in stereo (the mono 2D sounds go to the centre at full level instead of
+  -3 dB per side) and a phone beep too loud on headphones, hence the centre's default of -2 dB. The player's mix runs
+  on the output thread (`mix_frame`): a gain per speaker, presets that write them, the bass of the five other speakers
+  to the LFE (120 Hz low-pass, 10 dB down), a speaker test (pink noise per speaker, as a receiver does) and the meters
+  of the menu's speaker diagram. A device without a 5.1 path gets an ITU-R BS.775 fold-down. WASAPI rather than SDL on
+  Windows: a headset with a spatial sound format on (Windows Sonic, Dolby Atmos, DTS Headphone:X) keeps a stereo mix
+  format, and SDL3 opens the endpoint at that count (asked for 6 channels on a PRO X Wireless with Sonic on, it opened
+  2), folding the 5.1 before the virtualiser sees it; WASAPI takes the 6 channel stream as it is. 7.1 ran without a
+  fault in one test (the sink's table goes to 8 channels) and is left out for now.
 - zstd: most RomFS files of 1.4.3 are zstd frames. The patch set `zstd` sends the game's two decoder entry points to
   libzstd on the host (`ov_zstd.c`, `AC_ZSTD_NATIVE`); the lifted decoder took almost three times as long.
 - Settings and menu: every key with its default is in one table (`cfg.c`), read from `astralchain.ini` and `AC_*`

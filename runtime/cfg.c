@@ -31,7 +31,7 @@ static int save_ok = 1;                         // the last cfg_save_to wrote (o
 // logged as unknown. A new variable goes here too, or its ini key logs a harmless "unknown key" line. FXAA stays known
 // though nothing reads it any more (it switched TotK's FXAA, which Astral Chain does not have): older files carry it.
 static const char *const known[] = {
-    "AB", "AMIIBO_DIR", "ANISO", "ANTI_ALIASING", "AO", "AO_DEBUG", "APP_POOL", "ASPECT", "ASPECT_MIGRATED", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_OFF", "AVSYNC_PATCH", "AUDIO_PREFILL_MS",
+    "AB", "AMIIBO_DIR", "ANISO", "ANTI_ALIASING", "AO", "AO_DEBUG", "APP_POOL", "ASPECT", "ASPECT_MIGRATED", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_BASS", "AUDIO_CENTER", "AUDIO_FRONT_LEFT", "AUDIO_FRONT_RIGHT", "AUDIO_MIX_PRESET", "AUDIO_OFF", "AUDIO_OUTPUT", "AUDIO_SUBWOOFER", "AUDIO_SURROUND_LEFT", "AUDIO_SURROUND_RIGHT", "AVSYNC_PATCH", "AUDIO_PREFILL_MS",
     "BACKGROUND_WINDOW", "BIND_A", "BIND_B", "BIND_DOWN", "BIND_L", "BIND_LCLICK", "BIND_LEFT", "BIND_LSTICK_DOWN", "BIND_LSTICK_LEFT",
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
@@ -84,7 +84,9 @@ static const struct { const char *key, *section; } sections[] = {
     {"PCSS", "display"},
     {"MODS_DIR", "mods"}, {"MODS_ORDER", "mods"}, {"MODS_DISABLED", "mods"}, {"MODS_REBUILD", "mods"},
     {"MENU_LANG", "language"}, {"LANG", "language"}, {"OPERATION_MODE", "language"},
-    {"VOLUME", "audio"},
+    {"VOLUME", "audio"}, {"AUDIO_OUTPUT", "audio"}, {"AUDIO_MIX_PRESET", "audio"}, {"AUDIO_FRONT_LEFT", "audio"},
+    {"AUDIO_FRONT_RIGHT", "audio"}, {"AUDIO_CENTER", "audio"}, {"AUDIO_SURROUND_LEFT", "audio"},
+    {"AUDIO_SURROUND_RIGHT", "audio"}, {"AUDIO_SUBWOOFER", "audio"}, {"AUDIO_BASS", "audio"},
     {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
     {"STICK_SENS", "input"},
@@ -158,6 +160,15 @@ static const CfgMeta metas[] = {
     {"HUD", "1", "0|1", LIVE},            // the gameplay HUD is drawn (resolution.c res_hud_tick); F12 switches it
     // Sound, Controls, Menu
     {"VOLUME", "100", "0..100", LIVE},
+    // what the game mixes (ov_audout.c out_open: fixed when the game opens its output, at start); the 5.1 mix of the
+    // output thread (mix_frame): a gain per speaker in dB, the bass of the other five to the subwoofer, and the menu's
+    // preset that writes them (custom once one is moved)
+    {"AUDIO_OUTPUT", "stereo", "stereo|5.1", RESTART},
+    {"AUDIO_MIX_PRESET", "balanced", "balanced|voices|immersive|custom", LIVE},
+    {"AUDIO_FRONT_LEFT", "0", "-12..6", LIVE}, {"AUDIO_FRONT_RIGHT", "0", "-12..6", LIVE},
+    {"AUDIO_CENTER", "-2", "-12..6", LIVE}, {"AUDIO_SURROUND_LEFT", "0", "-12..6", LIVE},
+    {"AUDIO_SURROUND_RIGHT", "0", "-12..6", LIVE}, {"AUDIO_SUBWOOFER", "0", "-12..6", LIVE},
+    {"AUDIO_BASS", "0", "0|1", LIVE},
     {"MOTION", "1", "0|1", LIVE}, {"RUMBLE_STRENGTH", "130", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
     {"RUMBLE_TRIGGERS", "0", "0|1", LIVE}, {"PAD_LAYOUT", "auto", "auto|nintendo|xbox|playstation", LIVE},
     {"PROMPTS", "auto", "auto|nintendo|xbox|playstation", RESTART},

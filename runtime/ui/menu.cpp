@@ -36,6 +36,7 @@ static thread_local int g_font_bad;
 
 extern "C" {
 #include "amiibo.h"
+#include "audio_out.h"
 #include "cheats.h"
 #include "cfg.h"
 #include "fs.h"
@@ -68,6 +69,11 @@ extern "C" int vk_fsr4_offered(void);                   // vk_fsr4.h: an AMD RDN
 extern "C" const char *vk_fsr4_missing(void);           // vk_fsr4.h: the file FSR 4 needs that is not there, or NULL
 extern "C" int vk_lowlat_backend(void);                 // vk.h: 0 off, 1 Reflex, 2 Anti-Lag 2, 3 built-in
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
+int audout_mix_channels(void);       // ov_audout.c: what the game mixes, 2 or 6; 0 before it opened its output
+void audout_meters(float peak[6]);   // ov_audout.c: the highest sample per speaker since the last call
+void audout_test(int on);            // ov_audout.c: start (1) or stop (0) the speaker test
+int audout_test_channel(void);       // ov_audout.c: the speaker the test plays on now, -1 none
+int audout_test_running(void);       // ov_audout.c: the test runs or is about to
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -783,12 +789,6 @@ static void tab_game(float scale) {
     opt_end();
 }
 
-static void tab_sound(float scale) {
-    opt_begin("##sound", scale);
-    opt_slider("AC_VOLUME", UI_MENU_VOLUME, 0, 100, UI_MENU_VOLUME_DESC, 5, "%.0f %%");
-    opt_end();
-}
-
 // A confirmation is open (Controls: restart, Advanced: reset): B and Esc close it, not the menu; L / R stay on the page.
 static bool g_modal;
 
@@ -909,6 +909,180 @@ static void restart_confirm(void) {
         opt_focus_key("##restart");   // back on the row it came from
     }
     ImGui::EndPopup();
+}
+
+// ---- the Sound tab: the output (stereo or 5.1) and what the device takes, the speaker diagram and test, the 5.1 mix
+
+// The speaker names of the rows and of the test, per channel of the mix (FL FR FC LFE SL SR); a stereo mix's two.
+static const UiTextId kSpeakerRow[6] = {UI_MENU_AUDIO_FRONT_LEFT, UI_MENU_AUDIO_FRONT_RIGHT, UI_MENU_AUDIO_CENTER,
+                                        UI_MENU_AUDIO_SUBWOOFER,  UI_MENU_AUDIO_SURROUND_LEFT,
+                                        UI_MENU_AUDIO_SURROUND_RIGHT};
+static const char *speaker_name(int ch, int nmix) {
+    if (nmix != 6) return menu_text(ch ? UI_MENU_SPK_RIGHT : UI_MENU_SPK_LEFT);
+    return menu_text(kSpeakerRow[ch]);
+}
+
+// The line under the output row (audio_out.h), so a player sees whether the setup is right before switching and that the
+// 5.1 gets through after: what the device takes, then how many channels the game sends it now. A headset with Windows
+// spatial sound on keeps a 2 channel mixer while it takes 5.1, so the line names spatial sound there rather than a count
+// that reads as "no 5.1". NULL before the game opened its output, or with AC_AUDIO=none. *warn: 5.1 is asked for and the
+// device takes none.
+static const char *audio_output_line(bool *warn) {
+    AudioOutInfo info;
+    audio_out_info(&info);
+    *warn = false;
+    if (!info.started) return nullptr;
+    static char line[512];
+    if (!info.open) {
+        snprintf(line, sizeof line, "%s", menu_text(UI_MENU_AUDIO_NO_DEVICE));
+        *warn = true;
+        return line;
+    }
+    int n;
+    if (info.surround_ok && info.spatial == 1)
+        n = snprintf(line, sizeof line, menu_text(UI_MENU_AUDIO_TAKES_51_SPATIAL), info.name);
+    else
+        n = snprintf(line, sizeof line, menu_text(info.surround_ok ? UI_MENU_AUDIO_TAKES_51 : UI_MENU_AUDIO_FOLDS_51),
+                     info.name, info.device_channels);
+#ifdef _WIN32
+    if (!info.surround_ok && n > 0 && n < (int)sizeof line)
+        n += snprintf(line + n, sizeof line - (size_t)n, " %s", menu_text(UI_MENU_AUDIO_SONIC_HINT));
+#endif
+    if (n > 0 && n < (int)sizeof line) {
+        n += snprintf(line + n, sizeof line - (size_t)n, " ");
+        snprintf(line + n, sizeof line - (size_t)n, menu_text(UI_MENU_AUDIO_SENDING), info.stream_channels);
+    }
+    *warn = !info.surround_ok && !strcmp(cfg_value("AC_AUDIO_OUTPUT"), "5.1");
+    return line;
+}
+
+// The room from above with the listener in the middle: each speaker of the mix lights up with its sound (the output's
+// peaks since the last frame on a 48 dB scale, falling 24 dB a second) and is outlined while the speaker test plays on
+// it, so a player sees that every speaker gets sound and which one is which. Not a row: the cursor passes it by.
+static void speaker_map(int nmix) {
+    static float lit[6];
+    static double last;
+    float peak[6];
+    audout_meters(peak);
+    double now = ImGui::GetTime();
+    float dt = (float)(now - last);
+    last = now;
+    if (dt < 0 || dt > 0.2f) dt = 0.2f;
+    for (int c = 0; c < 6; c++) {
+        float db = peak[c] > 1e-6f ? 20.0f * log10f(peak[c]) : -120.0f;
+        float v = fminf(fmaxf((db + 48.0f) / 48.0f, 0.0f), 1.0f);
+        lit[c] = fmaxf(v, lit[c] - dt * 0.5f);
+    }
+    const int testing = audout_test_channel();
+    struct Spot { int ch; float x, y; UiTextId name; };
+    static const Spot spots51[] = {{0, -0.62f, -0.82f, UI_MENU_SPK_LEFT},          {2, 0.0f, -1.0f, UI_MENU_SPK_CENTER},
+                                   {1, 0.62f, -0.82f, UI_MENU_SPK_RIGHT},          {4, -1.0f, 0.42f, UI_MENU_SPK_SURROUND_LEFT},
+                                   {5, 1.0f, 0.42f, UI_MENU_SPK_SURROUND_RIGHT},   {3, 0.62f, 1.0f, UI_MENU_SPK_SUB}};
+    static const Spot spots20[] = {{0, -0.62f, -0.82f, UI_MENU_SPK_LEFT}, {1, 0.62f, -0.82f, UI_MENU_SPK_RIGHT}};
+    const Spot *spots = nmix == 6 ? spots51 : spots20;
+    const int count = nmix == 6 ? 6 : 2;
+
+    float fs = ImGui::GetFontSize(), small = fs * 0.72f, w = ImGui::GetContentRegionAvail().x, h = floorf(fs * 9.0f);
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(w, h));
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImFont *font = ImGui::GetFont();
+    float r = 9 * fs / 26.0f;
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), IM_COL32(0, 0, 0, 40), r);
+    dl->AddRect(p, ImVec2(p.x + w, p.y + h), IM_COL32(255, 255, 255, 38), r);
+    float cx = p.x + w * 0.5f, cy = p.y + h * 0.5f, rx = fminf(w * 0.36f, h * 0.9f), ry = h * 0.32f;
+    float box = fs * 1.15f;
+    for (int i = 0; i < count; i++)   // faint lines from the listener to each speaker
+        dl->AddLine(ImVec2(cx, cy), ImVec2(cx + spots[i].x * rx, cy + spots[i].y * ry), IM_COL32(255, 255, 255, 22), 1.0f);
+    dl->AddCircleFilled(ImVec2(cx, cy), fs * 0.5f, IM_COL32(236, 194, 84, 70));
+    dl->AddCircle(ImVec2(cx, cy), fs * 0.5f, IM_COL32(236, 194, 84, 200), 0, 1.5f);
+    const char *you = menu_text(UI_MENU_SPK_YOU);
+    float yw = font->CalcTextSizeA(small, FLT_MAX, 0, you).x;
+    dl->AddText(font, small, ImVec2(cx - yw * 0.5f, cy + fs * 0.6f), IM_COL32(150, 150, 140, 255), you);
+    for (int i = 0; i < count; i++) {
+        const Spot &s = spots[i];
+        float x = cx + s.x * rx, y = cy + s.y * ry, v = lit[s.ch];
+        ImVec2 a(x - box * 0.5f, y - box * 0.5f), b(x + box * 0.5f, y + box * 0.5f);
+        dl->AddRectFilled(a, b, IM_COL32(58, 58, 54, 255), box * 0.22f);
+        dl->AddRectFilled(a, b, IM_COL32(236, 194, 84, (int)(225 * v)), box * 0.22f);
+        dl->AddCircle(ImVec2(x, y), box * 0.27f, IM_COL32(20, 20, 18, 200), 0, 2.0f);   // the driver
+        bool on = s.ch == testing;
+        dl->AddRect(a, b, on ? IM_COL32(255, 244, 214, 255) : IM_COL32(255, 255, 255, 60), box * 0.22f, 0, on ? 2.5f : 1.0f);
+        const char *name = menu_text(s.name);
+        float nw = font->CalcTextSizeA(small, FLT_MAX, 0, name).x;
+        dl->AddText(font, small, ImVec2(x - nw * 0.5f, b.y + fs * 0.12f),
+                    on ? IM_COL32(236, 194, 84, 255) : IM_COL32(205, 205, 195, 255), name);
+    }
+}
+
+// The 5.1 mix: a preset writes the speaker gains and the bass (as the colour presets do); moving one makes it Custom.
+static void rows_mix(void) {
+    static const struct { const char *name, *fl, *fr, *c, *sl, *sr, *sub, *bass; } presets[] = {
+        {"balanced", "0", "0", "-2", "0", "0", "0", "0"},
+        {"voices", "0", "0", "1", "-3", "-3", "0", "0"},
+        {"immersive", "0", "0", "-3", "3", "3", "0", "1"}};
+    static const UiTextId names[] = {UI_MENU_AUDIO_PRESET_BALANCED, UI_MENU_AUDIO_PRESET_VOICES,
+                                     UI_MENU_AUDIO_PRESET_IMMERSIVE, UI_MENU_AUDIO_PRESET_CUSTOM};
+    if (opt_choice("AC_AUDIO_MIX_PRESET", UI_MENU_AUDIO_PRESET, names, 4, UI_MENU_AUDIO_PRESET_DESC)) {
+        const char *p = cfg_value("AC_AUDIO_MIX_PRESET");
+        for (const auto &e : presets)
+            if (!strcmp(p, e.name)) {
+                cfg_set("AC_AUDIO_FRONT_LEFT", e.fl), cfg_set("AC_AUDIO_FRONT_RIGHT", e.fr);
+                cfg_set("AC_AUDIO_CENTER", e.c), cfg_set("AC_AUDIO_SURROUND_LEFT", e.sl);
+                cfg_set("AC_AUDIO_SURROUND_RIGHT", e.sr), cfg_set("AC_AUDIO_SUBWOOFER", e.sub);
+                cfg_set("AC_AUDIO_BASS", e.bass);
+                cfg_save();
+            }
+    }
+    static const char *const keys[6] = {"AC_AUDIO_FRONT_LEFT", "AC_AUDIO_FRONT_RIGHT", "AC_AUDIO_CENTER",
+                                        "AC_AUDIO_SURROUND_LEFT", "AC_AUDIO_SURROUND_RIGHT", "AC_AUDIO_SUBWOOFER"};
+    static const UiTextId labels[6] = {UI_MENU_AUDIO_FRONT_LEFT, UI_MENU_AUDIO_FRONT_RIGHT, UI_MENU_AUDIO_CENTER,
+                                       UI_MENU_AUDIO_SURROUND_LEFT, UI_MENU_AUDIO_SURROUND_RIGHT, UI_MENU_AUDIO_SUBWOOFER};
+    static const UiTextId descs[6] = {UI_MENU_AUDIO_FRONT_DESC,    UI_MENU_AUDIO_FRONT_DESC,    UI_MENU_AUDIO_CENTER_DESC,
+                                      UI_MENU_AUDIO_SURROUND_DESC, UI_MENU_AUDIO_SURROUND_DESC, UI_MENU_AUDIO_SUBWOOFER_DESC};
+    bool moved = false;
+    for (int i = 0; i < 6; i++) moved |= opt_slider(keys[i], labels[i], -12, 6, descs[i], 1, "%+.0f dB");
+    moved |= opt_toggle("AC_AUDIO_BASS", UI_MENU_AUDIO_BASS, UI_MENU_AUDIO_BASS_DESC);
+    if (moved && strcmp(cfg_value("AC_AUDIO_MIX_PRESET"), "custom")) {
+        cfg_set("AC_AUDIO_MIX_PRESET", "custom");
+        cfg_save();
+    }
+}
+
+static void tab_sound(float scale) {
+    opt_begin("##sound", scale);
+    opt_slider("AC_VOLUME", UI_MENU_VOLUME, 0, 100, UI_MENU_VOLUME_DESC, 5, "%.0f %%");
+
+    opt_group(UI_MENU_AUDIO_GROUP_OUTPUT);
+    static const UiTextId output[] = {UI_MENU_AUDIO_STEREO, UI_MENU_AUDIO_51};   // cfg.c's values for AUDIO_OUTPUT
+#ifdef _WIN32
+    const UiTextId output_desc = UI_MENU_AUDIO_OUTPUT_DESC_WIN;   // names Windows Sonic and the other spatial formats
+#else
+    const UiTextId output_desc = UI_MENU_AUDIO_OUTPUT_DESC;
+#endif
+    opt_choice("AC_AUDIO_OUTPUT", UI_MENU_AUDIO_OUTPUT, output, 2, output_desc);
+    bool warn;
+    if (const char *line = audio_output_line(&warn)) opt_text_str(line, warn);
+    // The output is fixed when the game opens it: while the one asked for differs, offer the restart right here.
+    const int nmix = audout_mix_channels(), want = !strcmp(cfg_value("AC_AUDIO_OUTPUT"), "5.1") ? 6 : 2;
+    bool ask = nmix && want != nmix && opt_button("##restart", UI_MENU_RESTART, UI_MENU_AUDIO_RESTART_DESC);
+
+    if (nmix) {
+        opt_group(UI_MENU_AUDIO_GROUP_MIX);
+        speaker_map(nmix);
+        const bool running = audout_test_running() != 0;
+        const int ch = audout_test_channel();
+        const char *value = !running ? menu_text(UI_MENU_AUDIO_TEST_START) : ch >= 0 ? speaker_name(ch, nmix) : "...";
+        if (opt_text_row("##audio_test", menu_text(UI_MENU_AUDIO_TEST), value,
+                         running ? menu_text(UI_MENU_AUDIO_TEST_STOP) : nullptr, menu_text(UI_MENU_AUDIO_TEST_DESC),
+                         false) == 2)
+            audout_test(!running);
+        if (nmix == 6) rows_mix();
+        else opt_text(UI_MENU_AUDIO_MIX_HINT);
+    }
+    opt_end();
+    if (ask) ImGui::OpenPopup("##restart_confirm");   // at the level BeginPopupModal looks it up
+    restart_confirm();
 }
 
 static void tab_controls(float scale) {
@@ -1104,7 +1278,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     ImGui::SameLine();
     if (ImGui::Button(quit, ImVec2(bw, 0))) gfx_window_request_close();
     bool was_modal = g_modal || binds_modal();
-    if (g_tab != TAB_CONTROLS) g_modal = false;
+    if (g_tab != TAB_CONTROLS && g_tab != TAB_SOUND) g_modal = false;   // the two tabs with "Restart now"
     if (!was_modal && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
         set_open(0);
     ImGui::End();

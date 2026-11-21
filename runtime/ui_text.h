@@ -95,6 +95,27 @@ typedef enum {
 
     // Sound
     UI_MENU_VOLUME, UI_MENU_VOLUME_DESC,
+    UI_MENU_AUDIO_OUTPUT, UI_MENU_AUDIO_OUTPUT_DESC,   // audio_output; the description of hosts other than Windows
+    UI_MENU_AUDIO_OUTPUT_DESC_WIN,                     // the same on Windows, which names its spatial sound formats
+    UI_MENU_AUDIO_STEREO, UI_MENU_AUDIO_51,
+    // The line under the output row, what the device takes: printf of the output's name (SPATIAL), and of its name and
+    // its mixer's channel count (TAKES_51, FOLDS_51); then on Windows the spatial sound hint after FOLDS_51, and SENDING
+    // (printf: the channels the game sends now).
+    UI_MENU_AUDIO_TAKES_51_SPATIAL, UI_MENU_AUDIO_TAKES_51, UI_MENU_AUDIO_FOLDS_51, UI_MENU_AUDIO_SONIC_HINT,
+    UI_MENU_AUDIO_SENDING,
+    UI_MENU_AUDIO_NO_DEVICE,
+    UI_MENU_AUDIO_MIX_HINT,       // in place of the mix rows while the game mixes stereo
+    UI_MENU_AUDIO_GROUP_OUTPUT, UI_MENU_AUDIO_GROUP_MIX,   // headings of the Sound tab
+    UI_MENU_AUDIO_RESTART_DESC,   // "Restart now" under the output row, while the output asked waits for a restart
+    UI_MENU_AUDIO_TEST, UI_MENU_AUDIO_TEST_DESC, UI_MENU_AUDIO_TEST_START, UI_MENU_AUDIO_TEST_STOP,
+    UI_MENU_AUDIO_PRESET, UI_MENU_AUDIO_PRESET_DESC, UI_MENU_AUDIO_PRESET_BALANCED, UI_MENU_AUDIO_PRESET_VOICES,
+    UI_MENU_AUDIO_PRESET_IMMERSIVE, UI_MENU_AUDIO_PRESET_CUSTOM,
+    UI_MENU_AUDIO_FRONT_LEFT, UI_MENU_AUDIO_FRONT_RIGHT, UI_MENU_AUDIO_CENTER, UI_MENU_AUDIO_SURROUND_LEFT,
+    UI_MENU_AUDIO_SURROUND_RIGHT, UI_MENU_AUDIO_SUBWOOFER,
+    UI_MENU_AUDIO_FRONT_DESC, UI_MENU_AUDIO_CENTER_DESC, UI_MENU_AUDIO_SURROUND_DESC, UI_MENU_AUDIO_SUBWOOFER_DESC,
+    UI_MENU_AUDIO_BASS, UI_MENU_AUDIO_BASS_DESC,
+    UI_MENU_SPK_LEFT, UI_MENU_SPK_RIGHT, UI_MENU_SPK_CENTER, UI_MENU_SPK_SURROUND_LEFT, UI_MENU_SPK_SURROUND_RIGHT,
+    UI_MENU_SPK_SUB, UI_MENU_SPK_YOU,   // the speaker diagram's short names, and the listener in its middle
 
     // Controls
     UI_MENU_MOTION, UI_MENU_MOTION_DESC,

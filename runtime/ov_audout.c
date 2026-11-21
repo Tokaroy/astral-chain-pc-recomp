@@ -4,12 +4,27 @@
 // interleaved PCM at 48 kHz. The game appends a buffer, waits on the buffer event the SDK registered from
 // RegisterBufferEvent, takes the tags of the buffers the device has finished with from GetReleasedAudioOutBuffers, and
 // refills and appends them again. Nothing here blocks: an append converts the guest PCM into the host ring and returns,
-// and the SDL audio thread drains that ring without taking a guest lock. A buffer counts as played once its samples have
-// left the ring, which is what paces the game's audio thread.
+// and the output thread (audio_out.h: WASAPI on Windows, SDL3 elsewhere) drains that ring without taking a guest lock. A
+// buffer counts as played once its samples have left the ring, which is what paces the game's audio thread.
 //
-// audren:u (runtime/audren.c) is the other renderer path and has its own mixer; this game never opens a renderer, only
-// the IAudioDevice service for the master volume (nn::audio::SetAudioDeviceOutputVolume). Both open SDL's audio
-// subsystem, which SDL reference-counts.
+// 5.1 (AC_AUDIO_OUTPUT=5.1). The game's sound engine is Wwise 2019.1; its Switch sink (main+0x83a110) opens the output
+// for stereo, then reads nn::audio::GetAudioOutChannelCount, which returns the count this service answered in
+// OpenAudioOut, and sets its master mix to it (a table of channel masks for 1 to 8 channels; 6 gives 0x60f, FL FR FC
+// LFE SL SR). So the service answers 6 and the game mixes 5.1 itself: the sound effects, voices and reverbs (the
+// se_master bus tree) follow the output, the music (mixer_bgm) is authored stereo and stays in front, and the LFE gets
+// nothing. The sources are mono (7117 streamed files, the voices) or stereo (1053). The count is fixed when the game
+// opens its output, at start, so the setting applies after a restart.
+// Measured on the new game's opening (title to the motorway, radio dialogue over traffic, 2 s RMS, 2026-11-21): in
+// stereo the fronts carry 0.069-0.082; in 5.1 the fronts 0.049-0.059, the centre 0.054-0.079 (the mono 2D sounds, the
+// voices and interface beeps, go there at full level instead of -3 dB per side), the surrounds 0.005-0.026, the LFE 0.
+// The voices came out about 3.4 dB louder than in stereo and a phone beep too loud on headphones, hence the centre
+// default of -2 dB (AC_AUDIO_CENTER). The player sets a gain per speaker, sends the bass to the subwoofer and tests the
+// speakers from the menu (mix_frame). 8 channels (7.1) also ran without a fault in one test and are left out for now.
+// A device without a 5.1 path gets the mix folded down here (ITU-R BS.775: centre and surround at -3 dB, the fronts
+// at unity, the LFE dropped), so the setting never silences anything.
+//
+// audren:u (runtime/audren.c) is the other renderer path and has its own mixer over SDL; this game never opens a
+// renderer, only the IAudioDevice service for the master volume (nn::audio::SetAudioDeviceOutputVolume).
 #include <math.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -17,8 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <SDL3/SDL.h>
-
+#include "audio_out.h"
 #include "audren.h"
 #include "cfg.h"
 #include "host.h"
@@ -27,12 +41,13 @@
 #include "platform/platform.h"
 
 #define AUDOUT_RATE 48000
-#define AUDOUT_CHANNELS 2
+#define AUDOUT_CHANNELS 2                     // what the game mixes unless AC_AUDIO_OUTPUT=5.1
+#define AUDOUT_MAX_CHANNELS 6                 // 5.1: FL FR FC LFE SL SR
 #define AUDOUT_MAX_SESSIONS 8
 #define AUDOUT_MAX_BUFFERS 32                 // the SDK's own queue limit (AudioCore::BufferCount)
-#define AUDOUT_RING_FRAMES 32768              // stereo frames of output queued ahead, about 680 ms
-#define AUDOUT_MAX_FRAME 1024                 // frames converted per callback step
+#define AUDOUT_RING_FRAMES 32768              // frames of output queued ahead, about 680 ms
 #define AUDOUT_DRY_MAX (AUDOUT_RATE / 2)      // frames of one dry stretch that count as sound coming late (0.5 s)
+#define AUDOUT_FOLD 0.70710678f               // -3 dB: centre and surrounds in a fold-down to stereo
 #define AUDOUT_SAMPLE_FORMAT_PCM16 1u
 #define AUDOUT_STATE_STARTED 0u
 #define AUDOUT_STATE_STOPPED 1u
@@ -41,15 +56,16 @@
 #define AUDOUT_R_INVALID_CHANNEL_COUNT 0x7C2u // nn::audio::ResultInvalidChannelCount
 #define AUDOUT_R_OUT_OF_RESOURCE 0xC401u
 
-// ---- output device: one ring and one SDL stream for every AudioOut session
+// ---- output device: one ring and one output stream for every AudioOut session
 //
 // played and queued are cumulative frame counters; the ring holds the frames in [played, queued), indexed modulo
-// AUDOUT_RING_FRAMES. Both start at 1 so a queued buffer's end marker is never 0 (0 means "no buffer"). Guest threads
-// append under push (one producer at a time); the SDL thread only moves played.
+// AUDOUT_RING_FRAMES, each AUDOUT_MAX_CHANNELS floats wide whatever the game mixes. Both start at 1 so a queued buffer's
+// end marker is never 0 (0 means "no buffer"). Guest threads append under push (one producer at a time); the output
+// thread only moves played.
 static struct {
-    SDL_AudioStream *stream;
     int device_ok, opened;
-    float ring[AUDOUT_RING_FRAMES * 2];
+    int channels;   // what the game mixes, chosen once at the first OpenAudioOut: 2, or 6 with AC_AUDIO_OUTPUT=5.1
+    float ring[AUDOUT_RING_FRAMES * AUDOUT_MAX_CHANNELS];
     _Atomic uint64_t played, queued;
     PlatMutex push;
     volatile int64_t overruns;
@@ -59,16 +75,16 @@ static struct {
     _Atomic uint64_t dry_frames, dry_gaps;
     _Atomic int fed;
     uint64_t dry_logged, dry_gaps_logged, dry_log_ns;   // what the last log line reported, and when (out_dry_report)
-    double level_sum, level_peak;
-    uint64_t level_count;
-} out = {.push = PLAT_MUTEX_INIT, .played = 1, .queued = 1};
+    double level_sum[AUDOUT_MAX_CHANNELS], level_peak;   // per channel, the game's mix after the volume (AC_TRACE=audio)
+    uint64_t level_count;                                // frames in level_sum
+} out = {.push = PLAT_MUTEX_INIT, .played = 1, .queued = 1, .channels = AUDOUT_CHANNELS};
 
 typedef struct {
     uint64_t tag, end;   // end: the cumulative frame counter at which this buffer has been played out
 } AudoutBuffer;
 
 typedef struct AudoutOut {
-    volatile int32_t refs;         // the IPC session plus any SDL-thread use
+    volatile int32_t refs;         // the IPC session plus any output-thread use
     uint32_t state;
     float volume;
     int rate, channels;
@@ -76,13 +92,13 @@ typedef struct AudoutOut {
     PlatMutex lock;                // the buffer queue, taken by guest threads only
     AudoutBuffer q[AUDOUT_MAX_BUFFERS];
     int head, count;
-    _Atomic uint64_t oldest_end;   // q[head].end, 0 when the queue is empty (read by the SDL thread)
+    _Atomic uint64_t oldest_end;   // q[head].end, 0 when the queue is empty (read by the output thread)
     _Atomic uint64_t signalled;    // the last oldest_end the event was signalled for
     uint64_t played_base;          // out.played when the session started, for GetAudioOutPlayedSampleCount
     int logged;
 } AudoutOut;
 
-// Sessions the SDL thread may look at. It only ever try-locks the list, so it can never wait for a guest thread (which
+// Sessions the output thread may look at. It only ever try-locks the list, so it can never wait for a guest thread (which
 // may hold the kernel lock, and kern_event_signal takes that).
 static AudoutOut *g_sessions[AUDOUT_MAX_SESSIONS];
 static PlatMutex g_sessions_lock = PLAT_MUTEX_INIT;
@@ -107,7 +123,7 @@ static float host_volume(void) {
     return v;
 }
 
-// Signals the buffer event of every session whose oldest queued buffer has been played out. Runs on the SDL audio
+// Signals the buffer event of every session whose oldest queued buffer has been played out. Runs on the output
 // thread: it collects the sessions under a try-lock and signals only after dropping it, so it never holds a lock a guest
 // thread waits for while taking the kernel lock.
 static void notify_released(void) {
@@ -133,94 +149,226 @@ static void notify_released(void) {
     }
 }
 
-// SDL's audio thread: hands stereo float to the device, silence when the ring runs dry. A dry ring while the game feeds
-// it means the game's sound thread did not refill in time: the device plays silence, and everything the game streams
-// (a voice, a movie's sound) comes that much later, for good, since the game queues a buffer only when one comes back.
-// Those frames are counted for the log (out_dry_report) and move the dry clock on (audio_mixer.c
-// audio_device_dry_ns), by which a cutscene's picture waits for its sound (frame_rate.c cutscene_lost); every request
-// moves the device clock on. Only the first AUDOUT_DRY_MAX frames of one dry stretch move the dry clock: a longer one
-// is not a late sound thread but a game that stopped feeding the output, and no picture has to wait for that.
-// AC_TEST_FREEZE (frame_rate.c frame_test_frozen): while a test freeze lasts the device gets silence, the ring is
-// left alone and neither clock moves, as if the process stood still.
-static void SDLCALL audout_pull(void *user, SDL_AudioStream *stream, int additional, int total) {
-    (void)user;
-    (void)total;
-    float tmp[2 * AUDOUT_MAX_FRAME];
-    static uint64_t dry;   // frames of silence in the dry stretch the last request was in, 0 none (SDL thread only)
-    uint64_t played = atomic_load_explicit(&out.played, memory_order_relaxed);
-    while (additional > 0) {
-        int frames = additional / (int)(2 * sizeof(float));
-        if (frames > AUDOUT_MAX_FRAME) frames = AUDOUT_MAX_FRAME;
-        if (frames <= 0) break;
-        uint64_t queued = atomic_load_explicit(&out.queued, memory_order_acquire);
-        uint64_t have = queued > played ? queued - played : 0;
-        int frozen = frame_test_frozen();
-        if (frozen) have = 0;
-        int n = have < (uint64_t)frames ? (int)have : frames;
-        uint64_t late = 0;   // frames of this request that count as the game's sound coming late
-        if (n < frames && !frozen && atomic_load_explicit(&out.fed, memory_order_relaxed)) {
-            uint64_t silent = (uint64_t)(frames - n);
-            atomic_fetch_add_explicit(&out.dry_frames, silent, memory_order_relaxed);
-            if (!dry) atomic_fetch_add_explicit(&out.dry_gaps, 1, memory_order_relaxed);
-            late = dry >= AUDOUT_DRY_MAX ? 0 : silent < AUDOUT_DRY_MAX - dry ? silent : AUDOUT_DRY_MAX - dry;
-            dry += silent;
-        } else if (n == frames) {
-            dry = 0;
-        }
-        if (!frozen) audio_device_clock_add((uint64_t)frames, late, AUDOUT_RATE);
-        for (int i = 0; i < n; i++) {
-            uint64_t k = (played + (uint64_t)i) % AUDOUT_RING_FRAMES;
-            tmp[2 * i] = out.ring[2 * k];
-            tmp[2 * i + 1] = out.ring[2 * k + 1];
-        }
-        if (n < frames) memset(tmp + 2 * n, 0, (size_t)(frames - n) * 2 * sizeof(float));
-        played += (uint64_t)n;
-        atomic_store_explicit(&out.played, played, memory_order_release);
-        if (!SDL_PutAudioStreamData(stream, tmp, (int)((size_t)frames * 2 * sizeof(float)))) break;
-        additional -= frames * (int)(2 * sizeof(float));
-        notify_released();
+// ---- the player's mix, on the output thread: a gain per speaker, the bass to the subwoofer, the speaker test, meters
+//
+// Applied as the output takes frames rather than as the game queues them, so a gain moved in the menu is heard at once
+// and not ~80 ms later (the ring), and the test and the meters work while the game queues nothing. Channel order FL FR
+// FC LFE SL SR; a stereo mix uses the first two and takes no gains (they are a 5.1 mix's), but the test and the meters.
+// The configuration is read on this thread through cfg_version, whose values are safe to read from any thread (cfg.c
+// keeps a replaced value's string).
+#define MIX_SUB_SUM 0.316f        // -10 dB: a receiver plays the LFE channel 10 dB hot, so the summed bass goes in 10 dB down
+#define MIX_TEST_ON (AUDOUT_RATE * 6 / 5)   // the speaker test: 1.2 s of noise per speaker...
+#define MIX_TEST_STEP (AUDOUT_RATE * 8 / 5)  // ...every 1.6 s
+#define MIX_TEST_FADE (AUDOUT_RATE / 50)     // 20 ms fades, no clicks
+#define MIX_TEST_PINK 0.058f      // pink noise at -20 dBFS RMS (measured: the generator's RMS is 1.72)
+#define MIX_TEST_LOW 0.092f       // the same noise low-passed at 120 Hz, -20 dBFS RMS (its RMS is 1.09)
+
+typedef struct { float b0, b1, b2, a1, a2, z1, z2; } MixBiquad;
+
+static float biquad_run(MixBiquad *q, float x) {   // transposed direct form II
+    float y = q->b0 * x + q->z1;
+    q->z1 = q->b1 * x - q->a1 * y + q->z2;
+    q->z2 = q->b2 * x - q->a2 * y;
+    return y;
+}
+
+// The test order of an A/V receiver, clockwise from the front left; a stereo mix tests its two.
+static const int mix_test_51[] = {0, 2, 1, 5, 4, 3}, mix_test_20[] = {0, 1};
+
+static struct {
+    unsigned seen;                              // cfg_version the gains were read at
+    float gain[AUDOUT_MAX_CHANNELS];            // linear, per speaker
+    float volume;                               // AC_VOLUME, for the test noise (the game's sound has it already)
+    int bass;                                   // AC_AUDIO_BASS
+    MixBiquad bass_lp, test_lp;                 // 120 Hz low-pass (Butterworth, Q 0.707) of the bass and the LFE test
+    _Atomic int test_req;                       // the menu: 1 start, -1 stop, 0 nothing new
+    _Atomic int test_ch;                        // the speaker the test plays on now, -1 none (read by the menu)
+    _Atomic int test_on;                        // the test runs (the output thread starts and ends it)
+    uint64_t test_pos;                          // frames since the test started
+    uint32_t rng;
+    float pink[3];
+    _Atomic uint32_t peak[AUDOUT_MAX_CHANNELS]; // float bits: the highest sample per speaker since the menu last read
+} mix = {.seen = ~0u, .test_ch = -1, .rng = 0x12345678u,
+         .bass_lp = {6.1006172e-05f, 1.2201234e-04f, 6.1006172e-05f, -1.9777863f, 0.9780303f, 0, 0},
+         .test_lp = {6.1006172e-05f, 1.2201234e-04f, 6.1006172e-05f, -1.9777863f, 0.9780303f, 0, 0}};
+
+static float db_gain(const char *key) {
+    double d = cfg_double(key);
+    return (float)pow(10.0, (d < -12 ? -12 : d > 6 ? 6 : d) / 20.0);
+}
+
+static void mix_update(void) {
+    unsigned ver = cfg_version();
+    if (ver == mix.seen) return;
+    mix.seen = ver;
+    mix.gain[0] = db_gain("AC_AUDIO_FRONT_LEFT");
+    mix.gain[1] = db_gain("AC_AUDIO_FRONT_RIGHT");
+    mix.gain[2] = db_gain("AC_AUDIO_CENTER");
+    mix.gain[3] = db_gain("AC_AUDIO_SUBWOOFER");
+    mix.gain[4] = db_gain("AC_AUDIO_SURROUND_LEFT");
+    mix.gain[5] = db_gain("AC_AUDIO_SURROUND_RIGHT");
+    mix.bass = cfg_bool("AC_AUDIO_BASS");
+    double pct = cfg_double("AC_VOLUME");
+    mix.volume = (float)((pct < 0 ? 0 : pct > 100 ? 100 : pct) / 100);
+}
+
+// Paul Kellet's economy pink noise filter over a xorshift white noise in [-1, 1).
+static float pink_noise(void) {
+    uint32_t s = mix.rng;
+    s ^= s << 13, s ^= s >> 17, s ^= s << 5;
+    mix.rng = s;
+    float w = (float)s * (1.0f / 2147483648.0f) - 1.0f;
+    mix.pink[0] = 0.99765f * mix.pink[0] + w * 0.0990460f;
+    mix.pink[1] = 0.96300f * mix.pink[1] + w * 0.2965164f;
+    mix.pink[2] = 0.57000f * mix.pink[2] + w * 1.0526913f;
+    return mix.pink[0] + mix.pink[1] + mix.pink[2] + w * 0.1848f;
+}
+
+// The speaker test's sample for this frame: *ch the speaker it plays on, -1 between two (or once it is over).
+static float test_sample(int nmix, int *ch) {
+    const int *order = nmix == 6 ? mix_test_51 : mix_test_20;
+    const int count = nmix == 6 ? 6 : 2;
+    uint64_t step = mix.test_pos / MIX_TEST_STEP, at = mix.test_pos % MIX_TEST_STEP;
+    mix.test_pos++;
+    if (step >= (uint64_t)count) {
+        mix.test_on = 0;
+        *ch = -1;
+        return 0;
+    }
+    float p = pink_noise();
+    *ch = order[step];
+    if (at >= MIX_TEST_ON) {
+        *ch = -1;
+        return 0;
+    }
+    float env = at < MIX_TEST_FADE ? (float)at / MIX_TEST_FADE
+              : at > MIX_TEST_ON - MIX_TEST_FADE ? (float)(MIX_TEST_ON - at) / MIX_TEST_FADE : 1.0f;
+    if (order[step] == 3) return biquad_run(&mix.test_lp, p) * MIX_TEST_LOW * env;   // the subwoofer: its band only
+    return p * MIX_TEST_PINK * env;
+}
+
+void audout_test(int on) { atomic_store_explicit(&mix.test_req, on ? 1 : -1, memory_order_release); }
+int audout_test_channel(void) { return atomic_load_explicit(&mix.test_ch, memory_order_acquire); }
+int audout_test_running(void) { return mix.test_on || atomic_load_explicit(&mix.test_req, memory_order_acquire) == 1; }
+
+// The highest sample per speaker (FL FR FC LFE SL SR) since the last call, after the gains; 0 for a speaker the mix has
+// not. Any thread (the menu's meters).
+void audout_meters(float peak[AUDOUT_MAX_CHANNELS]) {
+    for (int c = 0; c < AUDOUT_MAX_CHANNELS; c++) {
+        uint32_t bits = atomic_exchange_explicit(&mix.peak[c], 0, memory_order_acq_rel);
+        memcpy(&peak[c], &bits, 4);
     }
 }
 
-// Opens the output once. Without a device the service still answers and every buffer is reported played at once, so the
-// game's audio thread keeps recycling instead of stalling (the same choice audio_mixer.c makes).
+// One frame of the mix: x (nmix wide, the ring's frame or silence) through the gains, the bass and the test, into d
+// (channels wide: nmix, or 2 for a fold-down of a 5.1 mix). peak: this call's highest sample per speaker.
+static void mix_frame(const float *x, int nmix, float *d, int channels, float *peak) {
+    float f[AUDOUT_MAX_CHANNELS];
+    if (nmix == 6) {
+        for (int c = 0; c < 6; c++) f[c] = x[c] * mix.gain[c];
+        float low = biquad_run(&mix.bass_lp, f[0] + f[1] + f[2] + f[4] + f[5]);
+        if (mix.bass) f[3] += low * MIX_SUB_SUM * mix.gain[3];
+    } else {
+        f[0] = x[0], f[1] = x[1];
+    }
+    if (mix.test_on) {   // the game's sound is muted while the test runs, as on a receiver
+        int ch;
+        float t = test_sample(nmix, &ch) * mix.volume;
+        for (int c = 0; c < nmix; c++) f[c] = 0;
+        if (ch >= 0) f[ch] = t * (nmix == 6 ? mix.gain[ch] : 1.0f);
+        atomic_store_explicit(&mix.test_ch, ch, memory_order_relaxed);
+        if (!mix.test_on) atomic_store_explicit(&mix.test_ch, -1, memory_order_relaxed);
+    }
+    for (int c = 0; c < nmix; c++)
+        if (fabsf(f[c]) > peak[c]) peak[c] = fabsf(f[c]);
+    if (channels == nmix) {
+        for (int c = 0; c < channels; c++) d[c] = f[c];
+    } else {   // 5.1 to stereo (ITU-R BS.775): the fronts at unity, centre and surrounds at -3 dB, the LFE dropped
+        d[0] = f[0] + AUDOUT_FOLD * (f[2] + f[4]);
+        d[1] = f[1] + AUDOUT_FOLD * (f[2] + f[5]);
+    }
+}
+
+// The output thread (audio_out.h): frames channels wide (the game's count, or 2 for a fold-down of a 5.1 mix), silence
+// when the ring runs dry. A dry ring while the game feeds it means the game's sound thread did not refill in time: the
+// device plays silence, and everything the game streams (a voice, a movie's sound) comes that much later, for good, since
+// the game queues a buffer only when one comes back. Those frames are counted for the log (out_dry_report) and move the
+// dry clock on (audio_mixer.c audio_device_dry_ns), by which a cutscene's picture waits for its sound (frame_rate.c
+// cutscene_lost); every request moves the device clock on. Only the first AUDOUT_DRY_MAX frames of one dry stretch move
+// the dry clock: a longer one is not a late sound thread but a game that stopped feeding the output, and no picture has
+// to wait for that. AC_TEST_FREEZE (frame_rate.c frame_test_frozen): while a test freeze lasts the device gets silence,
+// the ring is left alone and neither clock moves, as if the process stood still.
+static void out_fill(float *dst, int frames, int channels) {
+    static uint64_t dry;   // frames of silence in the dry stretch the last request was in, 0 none (output thread only)
+    static const float silence[AUDOUT_MAX_CHANNELS];
+    const int nmix = out.channels;
+    uint64_t played = atomic_load_explicit(&out.played, memory_order_relaxed);
+    uint64_t queued = atomic_load_explicit(&out.queued, memory_order_acquire);
+    uint64_t have = queued > played ? queued - played : 0;
+    int frozen = frame_test_frozen();
+    if (frozen) have = 0;
+    int n = have < (uint64_t)frames ? (int)have : frames;
+    uint64_t late = 0;   // frames of this request that count as the game's sound coming late
+    if (n < frames && !frozen && atomic_load_explicit(&out.fed, memory_order_relaxed)) {
+        uint64_t silent = (uint64_t)(frames - n);
+        atomic_fetch_add_explicit(&out.dry_frames, silent, memory_order_relaxed);
+        if (!dry) atomic_fetch_add_explicit(&out.dry_gaps, 1, memory_order_relaxed);
+        late = dry >= AUDOUT_DRY_MAX ? 0 : silent < AUDOUT_DRY_MAX - dry ? silent : AUDOUT_DRY_MAX - dry;
+        dry += silent;
+    } else if (n == frames) {
+        dry = 0;
+    }
+    if (!frozen) audio_device_clock_add((uint64_t)frames, late, AUDOUT_RATE);
+    mix_update();
+    int req = atomic_exchange_explicit(&mix.test_req, 0, memory_order_acq_rel);
+    if (req == 1) mix.test_on = 1, mix.test_pos = 0;
+    if (req == -1 || frozen) {
+        mix.test_on = 0;
+        atomic_store_explicit(&mix.test_ch, -1, memory_order_relaxed);
+    }
+    float peak[AUDOUT_MAX_CHANNELS] = {0};
+    for (int i = 0; i < frames; i++) {
+        const float *x = i < n ? &out.ring[AUDOUT_MAX_CHANNELS * ((played + (uint64_t)i) % AUDOUT_RING_FRAMES)] : silence;
+        mix_frame(x, nmix, dst + (size_t)channels * (size_t)i, channels, peak);
+    }
+    for (int c = 0; c < nmix; c++) {   // keep the higher of this call's peak and what the menu has not read yet
+        uint32_t bits, old = atomic_load_explicit(&mix.peak[c], memory_order_relaxed);
+        float was;
+        memcpy(&was, &old, 4);
+        if (peak[c] <= was) continue;
+        memcpy(&bits, &peak[c], 4);
+        atomic_compare_exchange_strong_explicit(&mix.peak[c], &old, bits, memory_order_acq_rel, memory_order_relaxed);
+    }
+    atomic_store_explicit(&out.played, played + (uint64_t)n, memory_order_release);
+    notify_released();
+}
+
+// Opens the output once and chooses what the game mixes: 6 channels with AC_AUDIO_OUTPUT=5.1, else 2. Without an output
+// (AC_AUDIO=none, or one that cannot start) the service still answers and every buffer is reported played at once, so
+// the game's audio thread keeps recycling instead of stalling (the same choice audio_mixer.c makes). Runs on a guest
+// thread: opening a device takes tens of ms, so the virtual core is given back meanwhile.
 static void out_open(void) {
     if (out.opened) return;
     out.opened = 1;
+    out.channels = !strcmp(cfg_value("AC_AUDIO_OUTPUT"), "5.1") ? 6 : AUDOUT_CHANNELS;
     const char *mode = cfg_get("AC_AUDIO");
     if ((mode && !strcmp(mode, "none")) || cfg_get("AC_AUDIO_OFF")) {
         rt_log("audout: AC_AUDIO=none: buffers are recycled without a device");
         return;
     }
-    if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
-        rt_log("audout: SDL audio init failed (%s): buffers are recycled without sound", SDL_GetError());
-        return;
-    }
-    SDL_AudioSpec spec = {SDL_AUDIO_F32, AUDOUT_CHANNELS, AUDOUT_RATE};
-    out.stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, audout_pull, NULL);
-    if (!out.stream) {
-        rt_log("audout: no output device (%s): buffers are recycled without sound", SDL_GetError());
-        return;
-    }
-    if (!SDL_ResumeAudioStreamDevice(out.stream)) {
-        rt_log("audout: starting the output failed (%s): buffers are recycled without sound", SDL_GetError());
-        SDL_DestroyAudioStream(out.stream);
-        out.stream = NULL;
-        return;
-    }
-    out.device_ok = 1;
-    SDL_AudioSpec dev;
-    int period = 0;
-    SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(out.stream), &dev, &period);
-    if (period > 0 && dev.freq > 0) audio_device_set_period((uint64_t)period, (uint32_t)dev.freq);
-    const char *name = SDL_GetAudioDeviceName(SDL_GetAudioStreamDevice(out.stream));
-    rt_log("audout: SDL device '%s' opened, %d Hz stereo signed 16-bit in, float out, device period %d frames",
-           name ? name : "?", AUDOUT_RATE, period);
+    int away = kern_core_away();
+    out.device_ok = audio_out_start(out.channels, out_fill);
+    kern_core_back(&away);
 }
 
-// Converts and queues guest PCM (signed 16-bit interleaved) and returns the frame counter at which it has been played.
-// Frames past the ring's capacity are dropped; the buffer still comes back to the game.
+int audout_mix_channels(void) { return out.opened ? out.channels : 0; }
+
+// Converts and queues guest PCM (signed 16-bit interleaved, out.channels wide) and returns the frame counter at which it
+// has been played. The player's mix applies later, on the output thread (mix_frame). Frames past the ring's capacity are
+// dropped; the buffer still comes back to the game.
 static uint64_t out_push(const int16_t *pcm, uint64_t frames, float volume) {
+    const int ch = out.channels;
+    const float gain = volume * (1.0f / 32768.0f);
     plat_mutex_lock(&out.push);
     uint64_t queued = atomic_load_explicit(&out.queued, memory_order_relaxed);
     uint64_t played = atomic_load_explicit(&out.played, memory_order_acquire);
@@ -229,16 +377,16 @@ static uint64_t out_push(const int16_t *pcm, uint64_t frames, float volume) {
     uint64_t n = frames < room ? frames : room;
     if (!out.device_ok) n = 0;
     for (uint64_t i = 0; i < n; i++) {
-        uint64_t k = (queued + i) % AUDOUT_RING_FRAMES;
-        float l = (float)pcm[2 * i] * (1.0f / 32768.0f) * volume;
-        float r = (float)pcm[2 * i + 1] * (1.0f / 32768.0f) * volume;
-        out.ring[2 * k] = l;
-        out.ring[2 * k + 1] = r;
-        out.level_sum += (double)l * l + (double)r * r;
-        if (fabsf(l) > out.level_peak) out.level_peak = fabsf(l);
-        if (fabsf(r) > out.level_peak) out.level_peak = fabsf(r);
+        float *dst = &out.ring[AUDOUT_MAX_CHANNELS * ((queued + i) % AUDOUT_RING_FRAMES)];
+        const int16_t *src = pcm + (size_t)ch * i;
+        for (int c = 0; c < ch; c++) {
+            float v = (float)src[c] * gain;
+            dst[c] = v;
+            out.level_sum[c] += (double)v * v;
+            if (fabsf(v) > out.level_peak) out.level_peak = fabsf(v);
+        }
     }
-    out.level_count += 2 * n;
+    out.level_count += n;
     queued += n;
     atomic_store_explicit(&out.queued, queued, memory_order_release);
     if (n) atomic_store_explicit(&out.fed, 1, memory_order_relaxed);
@@ -322,7 +470,7 @@ static const IpcBuffer *first_buffer(const IpcRequest *rq, int *is_static) {
     return NULL;
 }
 
-// One log line when the ring ran dry (audout_pull counts, on SDL's thread; this runs on the game's sound thread at its
+// One log line when the ring ran dry (out_fill counts, on the output thread; this runs on the game's sound thread at its
 // next append), at most one per 5 s: a log with these lines explains sound that lags the picture.
 static void out_dry_report(void) {
     uint64_t dry = atomic_load_explicit(&out.dry_frames, memory_order_relaxed);
@@ -419,13 +567,17 @@ static void out_append(AudoutOut *o, const IpcRequest *rq, IpcResponse *rs) {
     if ((rt_trace & RT_TRACE_AUDIO) && out.level_count >= (uint64_t)AUDOUT_RATE * 5) {   // one line per 5 s queued
         uint64_t played = atomic_load_explicit(&out.played, memory_order_acquire);
         uint64_t queued_now = atomic_load_explicit(&out.queued, memory_order_acquire);
-        rt_log("audout: level rms %.4f peak %.4f over %.1f s; %lld buffers appended, %lld released (%lld empty), "
+        char rms[160];   // per channel: L R, or L R C LFE SL SR
+        int at = 0;
+        for (int c = 0; c < out.channels; c++)
+            at += snprintf(rms + at, sizeof rms - (size_t)at, " %.4f", sqrt(out.level_sum[c] / (double)out.level_count));
+        rt_log("audout: level rms%s peak %.4f over %.1f s; %lld buffers appended, %lld released (%lld empty), "
                "%llu frames queued, %.1f ms in the ring, %lld overruns",
-               sqrt(out.level_sum / (double)out.level_count), out.level_peak, out.level_count / 2.0 / AUDOUT_RATE,
-               (long long)out.appends, (long long)out.releases, (long long)out.zero_releases,
-               (unsigned long long)(queued_now - 1), (queued_now - played) * 1000.0 / AUDOUT_RATE,
-               (long long)out.overruns);
-        out.level_sum = out.level_peak = 0;
+               rms, out.level_peak, (double)out.level_count / AUDOUT_RATE, (long long)out.appends,
+               (long long)out.releases, (long long)out.zero_releases, (unsigned long long)(queued_now - 1),
+               (queued_now - played) * 1000.0 / AUDOUT_RATE, (long long)out.overruns);
+        memset(out.level_sum, 0, sizeof out.level_sum);
+        out.level_peak = 0;
         out.level_count = 0;
     }
     notify_released();   // the device may already be past it (no device, or an empty buffer)
@@ -586,8 +738,9 @@ static void audout_open(const IpcRequest *rq, IpcResponse *rs) {
         rs->result = AUDOUT_R_INVALID_SAMPLE_RATE;
         return;
     }
-    if (channels != 0 && channels != 2) {
-        rt_log("audout: OpenAudioOut asked for %u channels, only stereo is offered", channels);
+    // The game asks for stereo and then mixes for the count answered (the header's 5.1 paragraph); 6 is taken too.
+    if (channels != 0 && channels != 2 && channels != 6) {
+        rt_log("audout: OpenAudioOut asked for %u channels, only stereo and 5.1 are offered", channels);
         rs->result = AUDOUT_R_INVALID_CHANNEL_COUNT;
         return;
     }
@@ -604,7 +757,7 @@ static void audout_open(const IpcRequest *rq, IpcResponse *rs) {
     o->state = AUDOUT_STATE_STOPPED;
     o->volume = 1.0f;
     o->rate = AUDOUT_RATE;
-    o->channels = AUDOUT_CHANNELS;
+    o->channels = out.channels;
     o->event = kern_event_new();
     int slot = -1;
     plat_mutex_lock(&g_sessions_lock);
@@ -619,12 +772,12 @@ static void audout_open(const IpcRequest *rq, IpcResponse *rs) {
     }
     plat_inc32(&g_sessions_live);
 
-    uint32_t internal[4] = {AUDOUT_RATE, AUDOUT_CHANNELS, AUDOUT_SAMPLE_FORMAT_PCM16, AUDOUT_STATE_STOPPED};
+    uint32_t internal[4] = {AUDOUT_RATE, (uint32_t)out.channels, AUDOUT_SAMPLE_FORMAT_PCM16, AUDOUT_STATE_STOPPED};
     IPC_OUT(rs, internal);
     write_name(name_buffer(rq));
     rs->move[rs->nmove++] = ipc_session_new("IAudioOut", audout_out_handler, o, out_session_close);
-    rt_log("audout: OpenAudioOut -> session %d, %d Hz, %d channels, PCM16", plat_cas32(&g_sessions_live, 0, 0),
-           AUDOUT_RATE, AUDOUT_CHANNELS);
+    rt_log("audout: OpenAudioOut (%u channels asked) -> session %d, %d Hz, %d channels, PCM16", channels,
+           plat_cas32(&g_sessions_live, 0, 0), AUDOUT_RATE, out.channels);
 }
 
 void audout_manager_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {

@@ -308,6 +308,25 @@
 # audio_prefill_ms = 20
 # Volume in percent (0 to 100), on top of the game's own. Changes while the game runs take effect at once.
 # volume = 100
+# What the game mixes: stereo, or 5.1 (front left and right, centre, LFE, two surrounds). 5.1 needs an output that takes
+# it: a 5.1 or 7.1 output, or on Windows a headset with spatial sound on (Windows Sonic for Headphones, Dolby Atmos for
+# Headphones, DTS Headphone:X: the device's properties in the Windows sound settings). Elsewhere the 5.1 mix is folded
+# down to stereo. The settings menu shows what the output takes. Read at start.
+# audio_output = stereo
+# The 5.1 mix. Changes while the game runs take effect at once. The menu's preset writes the gains below: balanced,
+# voices (clearer dialogue), immersive (stronger surrounds, bass to the subwoofer), or custom once a gain is moved.
+# audio_mix_preset = balanced
+# Gain of each speaker in dB (-12 to 6). The centre carries the voices and interface sounds; -2 keeps them near their
+# level in stereo.
+# audio_front_left = 0
+# audio_front_right = 0
+# audio_center = -2
+# audio_surround_left = 0
+# audio_surround_right = 0
+# audio_subwoofer = 0
+# The game sends nothing to the subwoofer (LFE). 1 sends it the bass (below 120 Hz) of the five other speakers, 10 dB
+# down as a receiver expects of the LFE channel.
+# audio_bass = 0
 
 [input]
 # Gamepad motion controls (0 = off) and vibration (0 = off).
