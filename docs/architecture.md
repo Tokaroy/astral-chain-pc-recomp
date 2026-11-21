@@ -85,8 +85,11 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
   format, and SDL3 opens the endpoint at that count (asked for 6 channels on a PRO X Wireless with Sonic on, it opened
   2), folding the 5.1 before the virtualiser sees it; WASAPI takes the 6 channel stream as it is. 7.1 ran without a
   fault in one test (the sink's table goes to 8 channels) and is left out for now.
-- zstd: most RomFS files of 1.4.3 are zstd frames. The patch set `zstd` sends the game's two decoder entry points to
-  libzstd on the host (`ov_zstd.c`, `AC_ZSTD_NATIVE`); the lifted decoder took almost three times as long.
+- zstd: the 82 `.pkz` archives of Astral Chain 1.0.1's RomFS (7225 MiB, every compressed asset; the rest is Wwise
+  audio and Bink movies) hold zstd frames. `ov_zstd.c` can run the game's decoder entry points on libzstd on the host
+  (`AC_ZSTD_NATIVE`), as it did in TotK Recomp, where the lifted decoder took almost three times as long. It is not
+  active on 1.0.1: its guest addresses are TotK 1.4.3's and `recomp/patches-v101.txt` has no `zstd` set yet, so the
+  decoder runs lifted and `AC_ZSTD_NATIVE` changes nothing.
 - Settings and menu: every key with its default is in one table (`cfg.c`), read from `astralchain.ini` and `AC_*`
   variables and written back when the in-game menu changes it. The menu and the performance overlay are Dear ImGui,
   drawn into the swapchain image (`runtime/ui/`); their text is in `ui_text.c` (English, Russian, Brazilian Portuguese,
@@ -141,7 +144,10 @@ Every guest thread is a host thread. Astral Chain assumes Horizon's scheduler: t
 - Uniform snapshot. The game rewrites per-object uniform blocks on other threads soon after it submits the frame
   that reads them, while the replay still records it. At the start of a submission's replay every uniform range it
   binds from CPU-written pools is copied, and the draws bind the copy (`vk_usnap.c`, after MacNativeGames'
-  `AC_UBO_SNAPSHOT`); without it, late draws read another object's matrix.
+  `AC_UBO_SNAPSHOT`); without it, late draws read another object's matrix. The arenas prefer device-local memory
+  the CPU can write, but only within that heap's budget: without resizable BAR it is a 256 MiB window, and AMD's
+  Windows driver on APUs refuses every submit once it is over budget (Longshot issue 1879, Z1 Extreme and 780M);
+  past it the arena goes to host memory.
 - Repeated uniform binds. The game binds all 14 uniform slots of a stage before nearly every draw (54,560 bindings
   a frame in the town, 87% of them the range the recording already holds at that stage and slot). The recorder
   leaves those out (`nvn_api_cmd.c` `ubo_table`; `AC_UBO_DEDUPE=0` records them all): they were 1.7 of the 2.6 MiB of
