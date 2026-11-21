@@ -58,7 +58,9 @@ a game that writes a .profraw into DIR when it exits (plat_exit calls the profil
 ExitProcess and TerminateProcess skip the atexit one); tools/pgo_profile.py merges them into tools/data/pgo/<version>.proftext.xz. --pgo-use PROFILE compiles
 with a profile, --lto thin compiles to bitcode and lets lld optimise across the chunks and do the codegen, with
 --lto-jobs threads and a cache in <out>/thinlto-cache. --release-opt is both, with the version's profile when there
-is one: what the installer builds, on Linux and on Windows (llvm-mingw). Measured on a Z1 Extreme at 13 W on 4 cores,
+is one: what the installer builds, on Linux and on Windows (llvm-mingw). The profile's hash is a compile flag
+(-DAC_PGO_PROFILE), so a new profile recompiles every chunk even when its file keeps an old mtime, as a release
+folder's do (issue #136: chunks compiled with two profiles do not link under ThinLTO). Measured on a Z1 Extreme at 13 W on 4 cores,
 town, with a profile of that scene (2026-11-17, three alternating runs each): the guest render thread runs 10.9% fewer
 instructions and 9-11% fewer cycles per frame than a plain build (PGO alone 4.8% fewer instructions, ThinLTO alone
 3.8%; placing the hot functions first in .text alone, nothing). With the sparse profile of a town run and six minutes
@@ -656,6 +658,23 @@ JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 CREATE_SUSPENDED = 0x4
 
 
+def link_failure(exe):
+    """What a failed link left, for its message. A running astralchain.exe locks its file, and only then does the
+    message say so: issue #136's link stopped on the linker's own errors, and the old "a running astralchain.exe locks
+    it" sent the player to close a game that was not the cause (the installer runs the copy in the install folder, never
+    the one in its build folder)."""
+    if not exe.is_file():
+        return f'{flag_path(exe)} was not written (the linker\'s errors are above)'
+    try:
+        with open(exe, 'r+b'):
+            pass
+    except PermissionError:
+        return f'{flag_path(exe)} is the old one: a running astralchain.exe from this dir locks it'
+    except OSError:
+        pass
+    return f'{flag_path(exe)} is the old one (the linker\'s errors are above)'
+
+
 def run_measured(cmd, env):
     """Run cmd in its own job object. Returns (exit code, seconds, peak bytes of one process, peak bytes of all).
     Off Windows: the largest resident set of one child process, and 0 for all of them (no job accounting)."""
@@ -943,6 +962,13 @@ def main():
     profile = pgo_profile(args.pgo_use, args.version, out) if args.pgo_use else None
     if profile:
         GEN_FLAGS.append(f'-fprofile-use={cmd_path(profile)}')
+        # The profile's hash goes into the flags too (the macro itself is unused). Ninja sees a changed input by its
+        # mtime alone, and a release folder's files all carry the zip's fixed 1980 date (tools/make_release.py) at the
+        # same path from one release to the next: the 1.19.3 -> 1.20.0 update recompiled with the new profile only the
+        # chunks the lift had rewritten, kept 1.19.3's profile in the others, and ThinLTO refused to link the mix
+        # ("linking module flags 'ProfileSummary': IDs have conflicting values", issue #136). Ninja also compares
+        # each object's command line, so a new profile now recompiles every chunk whatever the dates.
+        GEN_FLAGS.append(f'-DAC_PGO_PROFILE={file_sha256(profile)[:16]}')
         GEN_DEPS.append(profile)
         print(f'build_game: profile-guided: {below_root(profile)}')
     if args.lto:
@@ -1022,8 +1048,7 @@ def main():
     code, dt, peak_one, _ = run_measured(base + [flag_path(exe)], env)
     print(f'link: {dt:.1f} s, peak {mib(peak_one)}')
     if code:
-        print(f'build_game: link failed, {flag_path(exe)} is the old one (a running astralchain.exe from this dir locks it)',
-              file=sys.stderr)
+        print(f'build_game: link failed, {link_failure(exe)}', file=sys.stderr)
         sys.exit(code)
     if args.make_runtime_lib:
         print(f'{below_root(exe)}: {mib(exe.stat().st_size)}')

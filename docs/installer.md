@@ -89,6 +89,9 @@ again: it is rebuilt from the 1.0.1 update.
    (`libacrt.a` or `libacrt-v2.a`) into `astralchain.exe` (`build_game.py --runtime-lib`; about 3 min on 24 cores).
    The generated C is compiled to bitcode with the profile of play `tools/data/pgo/<version>.profdata` and linked with
    ThinLTO (`--release-opt`), on Windows and Linux alike: the link takes about 2 min on 16 threads and 1 to 1.4 GiB.
+   The profile's hash is one of the compile flags: the release zip dates every file 1980-01-01, so Ninja cannot see a
+   new profile by its date, and an update that recompiled only the chunks the lift changed would link objects of two
+   profiles, which ThinLTO refuses (issue #136).
 5. **Prepare** the shaders: `tools/prepare_shaders.py` reads the variants players met (`data/shader-answers.bin`) and
    the shaders themselves from the RomFS (`tools/shader_census.py`), adds each shader's default variant, and writes the
    seed files; `astralchain.exe --prepare-shaders` then translates every variant and builds each stage library or compute
