@@ -106,10 +106,25 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
   2), folding the 5.1 before the virtualiser sees it; WASAPI takes the 6 channel stream as it is. 7.1 ran without a
   fault in one test (the sink's table goes to 8 channels) and is left out for now.
 - zstd: the 82 `.pkz` archives of Astral Chain 1.0.1's RomFS (7225 MiB, every compressed asset; the rest is Wwise
-  audio and Bink movies) hold zstd frames. `ov_zstd.c` can run the game's decoder entry points on libzstd on the host
-  (`AC_ZSTD_NATIVE`), as it did in TotK Recomp, where the lifted decoder took almost three times as long. It is not
-  active on 1.0.1: its guest addresses are TotK 1.4.3's and `recomp/patches-v101.txt` has no `zstd` set yet, so the
-  decoder runs lifted and `AC_ZSTD_NATIVE` changes nothing.
+  audio and Bink movies) hold zstd frames, and the game's decoder runs lifted. Decoding them on the host's libzstd was
+  measured on 2026-11-22 and not kept. `ov_zstd.c` is TotK Recomp's version, with TotK 1.4.3's guest addresses, and
+  `recomp/patches-v101.txt` has no `zstd` set, so `AC_ZSTD_NATIVE` and `AC_ZSTD_CHECK` change nothing on 1.0.1.
+  The variant tried replaced the one call found into main's decoder from outside it: the `bl ZSTD_decompressStream`
+  (main+0x862300) at main+0x9a4de8, in the decompressor method at main+0x9a4dc0. It decoded whole frames on the host
+  and left frames fed in pieces to the game's decoder. Boot and the load of a first save make 1395 such calls: 1156
+  whole frames (607 MiB out) went to the host, and the other 239 calls are 66 larger frames fed in pieces of up to
+  2 MiB (633 MiB out), so the host covered about half of the bytes. Its check mode found no difference in the frames
+  it took. On a Core Ultra laptop with an Arc 140T, docked at 60 fps, two series of three alternated runs a side:
+  - in check mode the same 1156 frames took 559 ms on the host (into new buffers) and 633 ms lifted, where the lifted
+    decoder took almost three times the host's time on TotK;
+  - the save load went from 2.974 to 2.890 s in the first series and from 3.030 to 2.988 s in the second, whose two
+    sides overlap: 1-3 %;
+  - boot to the title movie went from 3.818 to 3.707 s, then from 3.715 to 3.711 s: no repeatable gain;
+  - giving the virtual core up for frames from 64 KiB, from 128 KiB or never loaded alike (2.88 to 2.93 s, two runs
+    each).
+  That gain did not justify a hook in the game's decoder and a re-lift. Not measured: a Steam Deck, a 4-6 core CPU,
+  other GPUs, area and chapter changes, play past the new game's first scene (about 30 s of it made no decode). Not
+  built: the pieced frames on the host, which would need a host stream per guest stream.
 - Settings and menu: every key with its default is in one table (`cfg.c`), read from `astralchain.ini` and `AC_*`
   variables and written back when the in-game menu changes it. The menu and the performance overlay are Dear ImGui,
   drawn into the swapchain image (`runtime/ui/`); their text is in `ui_text.c` (English, Russian, Brazilian Portuguese,
