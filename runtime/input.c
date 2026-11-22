@@ -763,6 +763,19 @@ void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int
     poll_merged(-1, buttons, lx, ly, rx, ry);
 }
 
+void input_poll_paused(void) {
+    uint64_t b;
+    int32_t lx, ly, rx, ry;
+    // each source keeps its own memory of the chords (poll_merged), so poll the ones the game polls: another would see
+    // a chord still held from opening the menu as a new press and close it
+    if (players > 1) {
+        poll_merged(0, &b, &lx, &ly, &rx, &ry);
+        poll_merged(1, &b, &lx, &ly, &rx, &ry);
+    } else {
+        poll_merged(-1, &b, &lx, &ly, &rx, &ry);
+    }
+}
+
 void input_players(int n) {
     n = n > 1 ? 2 : 1;
     plat_mutex_lock(&lock);

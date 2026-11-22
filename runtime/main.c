@@ -181,11 +181,16 @@ void rt_udf(Cpu *c, uint64_t pc) {
 }
 
 // CNTPCT_EL0: the Switch counter runs at 19.2 MHz. The scale is set before main, so no thread reads it half written.
+// It counts the guest's time: it stands still while the game is paused (kernel.c kern_pause).
 static PlatScale tick_scale;
 
 __attribute__((constructor)) static void tick_scale_init(void) { tick_scale = plat_scale(19200000u, plat_counter_hz()); }
 
-uint64_t rt_ticks(void) { return plat_scaled(tick_scale, plat_counter()); }
+uint64_t rt_ticks(void) {
+    uint64_t t = __atomic_load_n(&kern_clock_stop, __ATOMIC_ACQUIRE);
+    if (__builtin_expect(!t, 1)) t = plat_counter() - __atomic_load_n(&kern_clock_lost, __ATOMIC_RELAXED);
+    return plat_scaled(tick_scale, t);
+}
 
 // ---- crash reporter
 typedef struct { uintptr_t host; uint64_t guest; } FnRev;

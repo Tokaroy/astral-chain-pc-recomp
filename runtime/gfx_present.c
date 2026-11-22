@@ -653,8 +653,10 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     MenuTarget mt = {c->instance, c->phys, c->device, c->gfx_family, c->gfx_queue,
                      g_sc_hdr ? VK_FORMAT_R8G8B8A8_UNORM : g_sc_fmt, g_sc_ext.width,
                      g_sc_ext.height, cw, ch, g_scaler};
-    int overlay = g_sc_view[idx] &&
-                  menu_overlay_frame(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), &mt, &menu_shot);
+    // the menu counts a paused game's repeats as frames too, or its test hooks would wait for the game
+    uint64_t shown = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) +
+                     __atomic_load_n(&gfx_counters.repeats, __ATOMIC_RELAXED);
+    int overlay = g_sc_view[idx] && menu_overlay_frame(shown, &mt, &menu_shot);
     if (!menu_shot && g_present_shot[0]) menu_shot = g_present_shot;   // AC_PRESENT_SHOT (vk_present_shot)
     int cap = (g_capture || menu_shot) && ensure_capture_buffer();
     int thumb = g_th_n && ensure_thumbs();

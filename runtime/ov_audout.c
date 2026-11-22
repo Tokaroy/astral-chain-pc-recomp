@@ -47,6 +47,7 @@
 #define AUDOUT_MAX_BUFFERS 32                 // the SDK's own queue limit (AudioCore::BufferCount)
 #define AUDOUT_RING_FRAMES 32768              // frames of output queued ahead, about 680 ms
 #define AUDOUT_DRY_MAX (AUDOUT_RATE / 2)      // frames of one dry stretch that count as sound coming late (0.5 s)
+#define PAUSE_RAMP (AUDOUT_RATE / 200)        // 5 ms: the fade at each end of a pause (out_fill)
 #define AUDOUT_FOLD 0.70710678f               // -3 dB: centre and surrounds in a fold-down to stereo
 #define AUDOUT_SAMPLE_FORMAT_PCM16 1u
 #define AUDOUT_STATE_STARTED 0u
@@ -297,28 +298,36 @@ static void mix_frame(const float *x, int nmix, float *d, int channels, float *p
 // cutscene_lost); every request moves the device clock on. Only the first AUDOUT_DRY_MAX frames of one dry stretch move
 // the dry clock: a longer one is not a late sound thread but a game that stopped feeding the output, and no picture has
 // to wait for that. AC_TEST_FREEZE (frame_rate.c frame_test_frozen): while a test freeze lasts the device gets silence,
-// the ring is left alone and neither clock moves, as if the process stood still.
+// the ring is left alone and neither clock moves, as if the process stood still. A paused game (kernel.c kern_paused)
+// is the same, except that the speaker test still plays (the menu is what paused the game) and that both ends are
+// ramped against clicks: the first request of the pause plays the next PAUSE_RAMP frames fading out without taking
+// them, and the first one after it plays them again fading in, so pauses add no offset between sound and picture.
 static void out_fill(float *dst, int frames, int channels) {
     static uint64_t dry;   // frames of silence in the dry stretch the last request was in, 0 none (output thread only)
     static const float silence[AUDOUT_MAX_CHANNELS];
+    static int was_paused;   // the last request found the game paused (output thread only)
     const int nmix = out.channels;
     uint64_t played = atomic_load_explicit(&out.played, memory_order_relaxed);
     uint64_t queued = atomic_load_explicit(&out.queued, memory_order_acquire);
     uint64_t have = queued > played ? queued - played : 0;
     int frozen = frame_test_frozen();
+    int paused = kern_paused(), turn = paused != was_paused;
+    was_paused = paused;
+    if (paused && (!turn || have > PAUSE_RAMP)) have = turn ? PAUSE_RAMP : 0;
     if (frozen) have = 0;
     int n = have < (uint64_t)frames ? (int)have : frames;
+    int ramp = !turn ? 0 : n < PAUSE_RAMP ? n : PAUSE_RAMP;
     uint64_t late = 0;   // frames of this request that count as the game's sound coming late
-    if (n < frames && !frozen && atomic_load_explicit(&out.fed, memory_order_relaxed)) {
+    if (n < frames && !frozen && !paused && atomic_load_explicit(&out.fed, memory_order_relaxed)) {
         uint64_t silent = (uint64_t)(frames - n);
         atomic_fetch_add_explicit(&out.dry_frames, silent, memory_order_relaxed);
         if (!dry) atomic_fetch_add_explicit(&out.dry_gaps, 1, memory_order_relaxed);
         late = dry >= AUDOUT_DRY_MAX ? 0 : silent < AUDOUT_DRY_MAX - dry ? silent : AUDOUT_DRY_MAX - dry;
         dry += silent;
-    } else if (n == frames) {
+    } else if (n == frames && !paused) {
         dry = 0;
     }
-    if (!frozen) audio_device_clock_add((uint64_t)frames, late, AUDOUT_RATE);
+    if (!frozen && !paused) audio_device_clock_add((uint64_t)frames, late, AUDOUT_RATE);
     mix_update();
     int req = atomic_exchange_explicit(&mix.test_req, 0, memory_order_acq_rel);
     if (req == 1) mix.test_on = 1, mix.test_pos = 0;
@@ -329,6 +338,12 @@ static void out_fill(float *dst, int frames, int channels) {
     float peak[AUDOUT_MAX_CHANNELS] = {0};
     for (int i = 0; i < frames; i++) {
         const float *x = i < n ? &out.ring[AUDOUT_MAX_CHANNELS * ((played + (uint64_t)i) % AUDOUT_RING_FRAMES)] : silence;
+        float ramped[AUDOUT_MAX_CHANNELS];
+        if (i < ramp) {
+            float g = (float)(paused ? ramp - i : i + 1) / (float)(ramp + 1);
+            for (int c = 0; c < nmix; c++) ramped[c] = x[c] * g;
+            x = ramped;
+        }
         mix_frame(x, nmix, dst + (size_t)channels * (size_t)i, channels, peak);
     }
     for (int c = 0; c < nmix; c++) {   // keep the higher of this call's peak and what the menu has not read yet
@@ -339,7 +354,7 @@ static void out_fill(float *dst, int frames, int channels) {
         memcpy(&bits, &peak[c], 4);
         atomic_compare_exchange_strong_explicit(&mix.peak[c], &old, bits, memory_order_acq_rel, memory_order_relaxed);
     }
-    atomic_store_explicit(&out.played, played + (uint64_t)n, memory_order_release);
+    if (!paused) atomic_store_explicit(&out.played, played + (uint64_t)n, memory_order_release);
     notify_released();
 }
 

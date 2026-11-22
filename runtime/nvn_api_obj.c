@@ -17,6 +17,7 @@
 #include "nvn_hmap.h"
 #include "nvn_tex.h"
 #include "platform/platform.h"
+#include "pause.h"
 
 // ---------- Descriptor pools
 // NVNboolean nvnTexturePoolInitialize(NVNtexturePool *tp, const NVNmemoryPool *p, ptrdiff_t offset, int n)
@@ -722,6 +723,7 @@ NVN_API(nvnQueueAcquireTexture) {
 // time comes from the pacer: the back end's present thread holds the host present until then (back-edge pacing, as the
 // Switch's display flips at vblank), so the present cadence does not follow the replay time; one period later the
 // image is free for the next acquire. Added latency: the slack of the frame (period minus its work), as on the Switch.
+// A pause (pause.c) is taken here, last: the frame is whole and the thread holds no core.
 NVN_API(nvnQueuePresentTexture) {
     win_t *o = arg_p(c, 1);
     int idx = (int)arg_x(c, 2);
@@ -738,4 +740,5 @@ NVN_API(nvnQueuePresentTexture) {
     o->avail[idx] = slot + period;
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
     rt_frame_presented(t, o->presents);
+    pause_frame(t);
 }

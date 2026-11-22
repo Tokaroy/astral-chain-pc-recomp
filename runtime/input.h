@@ -22,6 +22,9 @@ int input_poll_player(int player, uint64_t *buttons, int32_t *lx, int32_t *ly, i
 // The in-game menu (ui/menu.h): input_menu(1) when it opens (input_poll reports nothing, the cursor is released), (0) when
 // it closes (nothing until every button and stick direction is released). Independent of input_block.
 void input_menu(int open);
+// While the game is paused (pause.c) nothing else polls: one poll of every source the game reads, for the menu's and
+// the overlay's chords. It reports nothing.
+void input_poll_paused(void);
 // The gamepad alone, for the menu: Switch button bits and the left stick (up +y). 0 without a connected gamepad.
 // Minus+Plus combo and the neutral pad while the menu is open (input_map.c, window-system free): *held is the caller's memory
 // of the combo, sticks are lx, ly, rx, ry. Returns 1 in the poll where the combo goes down (toggle the menu once).

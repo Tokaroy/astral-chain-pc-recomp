@@ -269,6 +269,14 @@ void kern_bind_system_event(Cpu *c, uint64_t ev, int autoclear);   // guest thre
 void kern_signal_system_event(uint64_t ev);                // any thread
 int kern_svc(Cpu *c, uint32_t imm);                        // thread/sync SVCs; 1 if handled
 uint64_t kern_now_ns(void);
+// The pause (pause.c). kern_pause, on a thread without a virtual core: every guest thread stops and then the guest's
+// clock; 0, and the game runs on, when one did not stop. kern_resume undoes it.
+int kern_pause(void);
+void kern_resume(void);
+int kern_paused(void);                                     // the guest's clock stands still now; any thread
+uint64_t kern_paused_ns(void);                             // the time the pauses so far took, the current one excepted
+uint64_t kern_guest_ns(void);                              // kern_now_ns less the pauses: the guest's monotonic time
+extern uint64_t kern_clock_stop, kern_clock_lost;          // the same clock in plat_counter units, for rt_ticks
 extern uint64_t rt_guest_start_ns;   // kern_now_ns when the guest started (boot.c), 0 before
 typedef struct { uint64_t svcs, threads, host_calls; } RtStats;
 RtStats rt_stats(void);                                    // host_calls: hostfn_calls()

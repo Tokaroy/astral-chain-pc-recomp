@@ -27,6 +27,7 @@ int gfx_window_focused(void);
 // returns at once with the setting off and AC_TRACE=latency unset.
 void lowlat_acquire(int image);                            // the window image is acquired: the sleep, then a new frame
 void lowlat_input(void);                                   // before the game's pad read
+void lowlat_resume(void);                                  // after a pause: frame IDs above its repeats' present IDs
 void lowlat_present(int image, uint64_t slot, uint64_t period);   // the game presents image: its slot, the pacer's period
 uint64_t lowlat_frame(void);                               // the frame the game builds now (0 when not followed)
 
@@ -141,6 +142,9 @@ typedef struct {
     // The CPU waited for fence: small render targets written by work up to it go to their storage (vk_texture.c
     // vk_texture_write_back_small).
     void (*cpu_synced)(uint64_t fence);
+    // The last present's picture again, for the menu of a paused game (pause.c), on the thread that presented it:
+    // no frame of the game's, so none of a frame's bookkeeping. NULL: the back end cannot, and the game does not pause.
+    void (*repeat)(const tex_t *t, uint64_t at_ns);
 } GfxBackend;
 extern const GfxBackend gfx_null_backend, gfx_vulkan_backend;
 const GfxBackend *gfx_backend(void);                       // AC_GPU=null|vulkan (default vulkan)
@@ -151,7 +155,7 @@ uint64_t nvn_proc_address(const char *name);               // synthetic host add
 
 // ---- statistics and frames (nvn_api_*.c, vk_*.c; boot.c prints them)
 typedef struct { uint64_t frames, nvn_calls, nvn_distinct, unimplemented, validation_errors, shader_failures,
-                 draws_skipped; } GfxStats;
+                 draws_skipped, repeats; } GfxStats;   // repeats: presents of a paused game (GfxBackend repeat)
 GfxStats gfx_stats(void);
 void rt_frame_presented(const tex_t *t, uint64_t n);       // boot.c: --frames N ends the run after the Nth present
                                                            // (saves --shot first through read_texels)

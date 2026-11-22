@@ -166,6 +166,28 @@ Every guest thread is a host thread. Astral Chain assumes Horizon's scheduler: t
   (`AC_SPIN_SLEEP_US`, 0 to keep polling).
 - `free_cores = 1` (`AC_FREE_CORES=1`) turns the gate off, for experiments only: the game crashes or hangs, usually
   at start, because its job workers all report core 0 and share per-core memory (#212).
+- Pause (`runtime/pause.c`; `menu_pause = 1`, the default: while the menu is open). At a present the presenting thread
+  calls `kern_pause`: every holder is asked for its core as a better waiter would ask, none is granted again, and once
+  the three are back the guest's clock stops (`rt_ticks`, the kernel's timeouts and sleeps, the GPU timestamps), so
+  guest code never runs on a clock that stands still. The audio output keeps what is queued and plays silence, with
+  5 ms ramps that consume nothing. The presenting thread then shows the last picture again for the menu
+  (`GfxBackend.repeat`, through the replay queue so that timeline values keep their order) and polls the pad's chords.
+  The pause waits for a save being written (`fs_save_busy`), and a holder that keeps its core for 500 ms cancels it
+  for 2 s. Host threads go on, so no host lock they need may be held across `kern_core_back` or a call into guest
+  code. Another reason to pause goes into `pause_wanted`. The `free_cores` mode does not pause.
+  Measured on 2026-11-22 on a Core Ultra 9 285H with an Arc 140T, docked at 1600x900 and 60 fps, on the motorway:
+  - 108 pauses in a run stopped the threads in 1 ms at most (0.7 ms at the 99th percentile). Over 8 s paused none of
+    the game's 18 threads took a cycle, no SVC or NVN call ran, the sound queue and both clocks stood still and the
+    output was silent; the process went from about 0.7 to 0.06-0.09 of a core. 200 toggles of the menu up to 0.35 s
+    apart left the game at 60 fps. In a play-test of the new game's opening, eight pauses of 0.28 to 2.05 s left
+    the movie 40 ms and the cutscene held with it 27 ms from their sound, with no desync logged.
+  - The repeats run at a tenth under the display's rate (54 a second at 60 Hz). At 60 a second on that 60 Hz display
+    Intel's driver spun in `vkQueuePresentKHR` in mailbox and fifo from the second pause on: a whole core while
+    paused, and the present thread stayed there in play afterwards (3450 Mcycles a second against 205). Immediate
+    did not spin.
+  - `rt_ticks` went from 13.75 to 13.87 ns a call (best of 9 alternated runs of its body).
+  - Not measured: NVIDIA and AMD drivers (Reflex's frame IDs across a pause included), displays over 60 Hz, HDR,
+    co-op, the Steam Deck, Linux (the changed sources were only compiled for it) and `tools/av_sync_test.py`'s matrix.
 
 ### 4. Graphics
 

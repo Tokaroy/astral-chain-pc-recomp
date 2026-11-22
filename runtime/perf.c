@@ -319,11 +319,13 @@ static void cpu_placement(void) {
 }
 
 void perf_present(uint64_t frame) {
-    static uint64_t last, sum, max, n, win_start, ab_b;
+    static uint64_t last, last_paused, sum, max, n, win_start, ab_b;
     static int64_t win_prev[PERF_CNT_N];
     prof_render_tid = plat_thread_id();
     if (rt_trace & RT_TRACE_SCHED) kern_sched_report(frame);
-    uint64_t now = kern_now_ns(), d = last ? now - last : 0;
+    uint64_t now = kern_now_ns(), paused = kern_paused_ns();
+    uint64_t d = last ? now - last - (paused - last_paused) : 0;   // a pause is no slow frame, nor a flight spike
+    last_paused = paused;
     prof_sampler_frame(frame, now, last ? d : 0);
     uint64_t rep = ft_frame(frame, now, d);   // d is 0 on the first present: it only starts the period
     ab_b += rt_ab();

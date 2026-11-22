@@ -159,6 +159,11 @@
 # in front again. 0: it pauses when its window loses focus, as it does on the Switch when Home is pressed; a load
 # interrupted that way can stop for good. Read at each focus change.
 # assume_focus = 1
+# 1, the default: the game pauses while its settings menu (F1, or Minus + Plus) is open: picture, sound and game time
+# stand still and go on when it closes. The pause waits for a save being written. A setting whose effect the game
+# draws (upscaling, ambient occlusion, the HUD) then shows when the menu closes. 0: the game keeps running behind the
+# menu. Takes effect at once.
+# menu_pause = 1
 # 1, the default: the game draws its HUD. 0: the HUD of play (the gauges, the map, the prompts, the markers) is not
 # drawn; the menus stay. F12 switches it in game and saves it here, as does the menu's Game tab.
 # hud = 1

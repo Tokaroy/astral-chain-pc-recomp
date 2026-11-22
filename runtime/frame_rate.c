@@ -152,6 +152,8 @@ static void fps_publish(float step) {
 //     from then on (ov_audout.c audout_pull, audio_mixer.c audio_device_dry_ns). Each such gap would leave the
 //     picture further ahead of its sound.
 // Without a device the clocks are 0 and nothing is lost. The mark is taken again at each reading; first: only that.
+// A pause (pause.c) is no loss: the stretch is measured in the guest's time (kern_guest_ns), which stands still in
+// one as the device's clock does. So are the desync log's windows.
 #define CUT_WAIT_STEP (1.0f / 16.0f)   // the step of a frame that waits: the timer's low clamp, not 0
 
 static double wall_s(void);
@@ -164,7 +166,7 @@ static SoundMark cut_mark;   // the last frame of the cutscene run (game thread 
 
 static double sound_lost_ms(SoundMark *mark, int first, SoundLoss *out) {
     SoundMark was = *mark;
-    *mark = (SoundMark){kern_now_ns(), audio_device_clock_ns(), audio_device_dry_ns()};
+    *mark = (SoundMark){kern_guest_ns(), audio_device_clock_ns(), audio_device_dry_ns()};
     if (out) *out = (SoundLoss){0, 0, 0};
     if (first || !was.clock_ns) return 0;
     double dry = (double)(mark->dry_ns - was.dry_ns) / 1e6, still = 0;
@@ -197,7 +199,7 @@ static CauseWin cause_cur, cause_prev;   // cutscene frames, game thread only
 static unsigned desync_lines;
 
 static void cause_note(const SoundLoss *l) {
-    uint64_t now = kern_now_ns();
+    uint64_t now = kern_guest_ns();
     if (!cause_cur.start_ns) cause_cur.start_ns = now;
     else if (now - cause_cur.start_ns > CAUSE_WINDOW_NS) cause_prev = cause_cur, cause_cur = (CauseWin){now, 0, 0, 0, 0, 0};
     cause_cur.frames++;
@@ -236,7 +238,7 @@ static int desync_step(DesyncWatch *w, double av_ms, double *secs) {
     double a = av_ms < 0 ? -av_ms : av_ms;
     if (a > DESYNC_MS) {
         if (w->active) return DESYNC_NONE;
-        uint64_t now = kern_now_ns();
+        uint64_t now = kern_guest_ns();
         if (!w->since_ns) {
             w->since_ns = now;
         } else if (now - w->since_ns >= DESYNC_SUSTAIN_NS && desync_lines < DESYNC_LINES_MAX) {
@@ -247,7 +249,7 @@ static int desync_step(DesyncWatch *w, double av_ms, double *secs) {
     } else if (!w->active) {
         w->since_ns = 0;
     } else if (a < DESYNC_OK_MS) {
-        *secs = (double)(kern_now_ns() - w->began_ns) / 1e9;
+        *secs = (double)(kern_guest_ns() - w->began_ns) / 1e9;
         w->active = 0, w->since_ns = 0;
         return DESYNC_END;
     }
@@ -379,7 +381,7 @@ static void run_line(const char *what) {
 static void cutscene_report(void) {
     if (!run_frames) return;
     if (run_watch.active) {   // the run ended out of sync: the episode ends with it
-        double secs = (double)(kern_now_ns() - run_watch.began_ns) / 1e9;
+        double secs = (double)(kern_guest_ns() - run_watch.began_ns) / 1e9;
         desync_report_end(run_at60 ? "the cutscene at 60 fps" : "the cutscene held to 30", run_av_ms, secs, 0);
     }
     run_watch = (DesyncWatch){0, 0, 0};
@@ -1351,7 +1353,9 @@ void frame_step_present(uint64_t display_ns, int interval) {
     atomic_fetch_add_explicit(&g_presents, 1, memory_order_relaxed);
     frame_limit_live();
     cutscene_rate();
-    double dt = last_ns ? (double)(display_ns - last_ns) * 1e-9 : 0;
+    display_ns -= kern_paused_ns();   // the world clock and the speed line leave pauses out
+    // the slot given before a pause may lie up to a period after the first one that follows it
+    double dt = last_ns && display_ns > last_ns ? (double)(display_ns - last_ns) * 1e-9 : 0;
     if (interval > 0) step_now = interval / 60.0;
     last_ns = display_ns;
     // The game clock of untimed script lines: what the game stepped this frame, whole vsyncs.
