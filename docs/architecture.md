@@ -84,6 +84,10 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
   speeds the lifted functions up). Direct calls from the lifter with a register contract were left out: about 1 ns of
   stub and dispatch plus a few ns of register stores per call, at most about 0.5% of the render thread, with the
   hottest `memcpy` callers reaching the stub by tail calls.
+- Host calls (`runtime/hostfn.c`): on a miss the thread's target cache takes the host function itself in place of
+  `hostfn_entry` (`hostfn_direct`, default 1), except for `nn::fs`, `AC_TRACE=host` and `AC_CORE_DIAG`. On a ROG Ally
+  at 15 W in the town, four in-launch A/Bs took 1.8-2.5% off the draw command thread's CPU time per frame and 0.3-0.6%
+  off the frame interval; twelve alternated launches were too noisy to show a change of the frame.
 - Testing: LAS Recomp's differential harness, every lifted instruction class checked against Unicorn (test-only, never linked into the game).
 
 ### 3. Host

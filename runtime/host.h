@@ -134,6 +134,11 @@ void hostfn_report(void);                                  // call count per hos
 void hostfn_count_calls(int on);                           // count per function (on at start) or nothing (play)
 void hostfn_track_calls(void);                             // AC_CORE_DIAG: every host call in the thread's host depth
                                                            // (and counted in the total); before guest threads start
+GuestFn hostfn_direct(uint64_t addr);                      // dispatch_miss: the function a thread's target cache may
+                                                           // hold in place of hostfn_entry (AC_HOSTFN_DIRECT), NULL
+                                                           // for nn::fs, AC_TRACE=host, AC_CORE_DIAG and any address
+                                                           // without a slot. Once it gave one, counting or tracking
+                                                           // calls (the two functions above) is fatal
 int hostfn_table_size(int observers);                      // linked HOST_OVERRIDE (0) / HOST_OBSERVER (1) entries
 const char *hostfn_table_name(int observers, int i);       // symbol of linked entry i, NULL past the end
 uint64_t rt_original(Cpu *c);                              // inside an observer: call the guest definition with the
