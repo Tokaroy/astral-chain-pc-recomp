@@ -658,6 +658,8 @@ VkPrimitiveTopology vk_pipeline_topology(int nvn_prim);   // quads -> triangle l
                                                           // rewrites those draws; polygon -> fan
 VkFormat vk_vertex_format(int nvn_format, int *type);     // attribute format (supported fallback), GFX_TYPE_* in *type
 PFN_vkCmdPushDescriptorSetKHR vk_pipeline_push_fn(void);  // after the first vk_pipeline_* call
+VkPipelineCache vk_pipeline_cache(void);   // pipeline-cache.bin's cache (driver-synchronised); VK_NULL_HANDLE: none
+void vk_pipeline_cache_hold(int on);       // 1: no save of the cache until 0 (a library building into it, vk_xess.c)
 // Descriptor update templates (after the first vk_pipeline_* call): NULL when templates are off (AC_DESC_TEMPLATE=0,
 // a device below Vulkan 1.1) or, for the push variant, vkCmdPushDescriptorSetWithTemplateKHR is missing.
 PFN_vkCmdPushDescriptorSetWithTemplateKHR vk_pipeline_push_tpl_fn(void);

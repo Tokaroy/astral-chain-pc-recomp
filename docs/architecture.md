@@ -322,7 +322,20 @@ Every guest thread is a host thread. Astral Chain assumes Horizon's scheduler: t
   flight uses it. The library compiles its shaders when it makes a context (0.2 to 1 s for 1920x1080, 2.6 s for
   3840x2160 on the Z1 Extreme), so the context of the game's sizes is made while the game starts (`vk_dlaa_warm`,
   `boot.c`) and not at the first frame with a 3D scene, where it stalled the frame after a load and left a cutscene's
-  audio ahead of its picture. With `upscaling = fsr4` at start the device also enables
+  audio ahead of its picture. XeSS is made there too, for the pair of sizes it evaluates first (the scene at its own
+  size, or the reduced scene to the game resolution): the pair's work images, and its context, kernels and
+  `xessVKInit` on a thread of their own that the first evaluation joins. XeSS also builds its kernels into the back
+  end's `VkPipelineCache` (`pipeline-cache.bin`), whose saves wait meanwhile (`vk_pipeline_cache_hold`): without the
+  wait both cold starts with the thread crashed inside Intel's driver on the autosave thread, with it none of four
+  did. Measured on the Arc 140T (driver 101.9033), docked 1920x1080, XeSS native, on the motorway, with a measurement
+  build that held the AA point off until 90 s so that the first evaluation fell in 3D play (2 runs per arm,
+  alternated): with a cold driver cache and no kernels in the pipeline cache the first resolved frame took 5602 and
+  6261 ms without the pre-warm and 16.2 and 18.0 ms with it, the start unchanged; with warm caches frames 1-5 stayed
+  at 14-21 ms either way, and a throw-away evaluation changed nothing. Upscaled with a cold cache and other GPUs: not
+  measured. `AC_UPSCALER_PREWARM` is the test knob: `0` as before, `2` synchronous, `3` with the throw-away
+  evaluation. DLSS's feature is made there only with `2` or `3`: that path has never run (no NVIDIA GPU at hand), so
+  by default DLSS still makes its feature at its first frame, and its gain is not measured. With `upscaling = fsr4`
+  at start the device also enables
   `VK_KHR_compute_shader_derivatives`, which the shaders of AMD's library declare, and `VK_KHR_cooperative_matrix`
   and `VK_EXT_shader_float8`, which its FP8 model for the RX 9000 names (not run here: no such GPU at hand), when the
   GPU has them. Astral Chain renders forward: a depth-only prepass
@@ -344,9 +357,11 @@ Every guest thread is a host thread. Astral Chain assumes Horizon's scheduler: t
   (vertex program, index buffer, first vertex, counts) and the translation of its first matrix. `AC_DLAA_MVDEBUG=1`
   shows the vectors in place of the anti-aliased picture. Camera cuts, a missed AA point for 6 presents, another scene
   size or another light target start a new history. DLSS is created with model K (the transformer) and given the
-  measured frame time. After 600 presents without DLSS its features are released, and without any temporal AA the work
-  images too, without waiting for the GPU; at exit NGX is shut down before the device goes. The performance overlay's
-  Scaling line names the AA while it resolves frames.
+  measured frame time. After 600 presents with DLSS no longer chosen (another backend picked in the menu, or DLSS
+  failed) its features are released, and without any temporal AA the work images too, without waiting for the GPU;
+  a load, a movie or a menu keeps them, so a run makes its feature once per pair of sizes (by the code, untested). At
+  exit NGX is shut down before the device goes. The performance overlay's Scaling line names the AA while it resolves
+  frames.
   A smaller scene (`resolution.c`, the `scene` patch set of `recomp/patches-v101.txt`): the six `csel` of the game's
   dynamic-resolution ladder (main+0x40f18c..0x40f1dc) take every level's size from the patch page, so the game makes
   its scene targets (depth prepass, light target, bloom, composite) at the mode's share of the game resolution, on the
