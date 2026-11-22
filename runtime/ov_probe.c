@@ -1053,7 +1053,7 @@ int probe_services(void) {
     CHECK(obs_bound == NOBS, "%d of %d observers match a JUMP_SLOT", obs_bound, NOBS);
 
     // Every linked override is either probed here or belongs to another probe or owner (nn::fs: fs probe, fibers: kernel probe,
-    // memcpy: the graphics write-back in nvn_api_core.c).
+    // memcpy: ov_libc.c, checked by --probe-libc).
     int linked = hostfn_table_size(0), others = 0;
     for (int i = 0; i < linked; i++) {
         const char *n = hostfn_table_name(0, i);

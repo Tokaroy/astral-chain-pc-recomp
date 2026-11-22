@@ -64,6 +64,26 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
 - Coverage oracle: MacNativeGames' NSO rewriter lists every site where game code touches the OS (SVCs, TLS reads, counter reads, `x18`, exclusive windows, jump tables): 68,968 sites in 1.4.3 `main`. The lifter must handle every one.
 - Memory: guest address equals host address, all below 2^39 (IPC encodes 39-bit addresses). The heap, stacks and the alias region are reserved with `MEM_WRITE_WATCH`, so the graphics back end can ask which pages the CPU wrote since the last upload (`runtime/memory.c`).
 - Indirect branches go through `rt_dispatch` (`runtime/dispatch.c`), which looks the target up and tail-calls it: first in the calling thread's own cache of 1024 targets, then in the address table (`AC_DISPATCH_CACHE=0` leaves the cache empty). On Windows (a Core Ultra 9 285H, standing in a scene at 60 fps) the dispatch takes 2.1-2.2% of the samples inside the executable with the cache and 3.5% without it; the frame time is the same. An import stub (`adrp; ldr; add; br` on a GOT slot) whose slot the generator resolves to a lifted function compares the slot with that function's address and calls it directly when they match (`rt_stub_hit` in `cpu.h`), which they do unless the runtime bound a host function to the name; in the town 15 to 22% of the guest threads' indirect branches were such calls.
+- The sdk's C library on host code (`runtime/ov_libc.c`): `memcpy` always (a linked override, which also reads back
+  GPU-written pool storage), and with `host_libc` (default 1) `memset`, `memmove`, `memcmp`, `strlen`, `strcmp` and
+  `strncmp`, bound with `hostfn_add_override` before the modules load. The lift does not change: their import stubs
+  miss `rt_stub_hit` and reach the host function through `rt_dispatch`, and `host_libc = 0` gives the direct stub
+  calls back. The results match the sdk's in every register the caller sees (`memcmp` and the string compares return
+  the difference of the first unequal bytes, zero-extended; the host functions write x0 and nothing else), which
+  `--probe-libc` checks against the lifted functions. Up to 128 bytes the copies and fills are overlapping SSE stores;
+  copies of 1 to 8 MiB go in 256 KiB pieces, because ucrtbase's `memmove` switches to non-temporal stores between 1
+  and 1.75 MiB and the next read of the destination then misses the cache (copy then read 4-14% faster from 1.75 to
+  8 MiB in pieces; the game copies such sizes only while it loads). Measured on the Core Ultra 9 285H with the game
+  pinned to four E-cores, in the motorway chase of the opening at 60 fps (2026-11-22; the profile's only save is the
+  start of the game, so no fight on foot or Neuron headquarters run was possible): before, the six lifted functions,
+  their stubs and `memcpy`'s path took 2.3-2.9% of the render thread's running samples (`memcmp` 1.5-1.9%: the
+  uniform block compare at main+0x9d6510 and `strstr`); the render thread makes about 7,000 of these calls a frame,
+  5,500 of them `memcpy`. With `host_libc` on, two in-launch A/Bs (`AC_HOST_LIBC_AB=1`, `AC_AB=16`) gave the render
+  thread -2.5% and -3.0% guest time per frame (+-1.7 and +-1.9), and across six alternated launches its CPU time per
+  frame went from 5.17-5.25 ms to 3.66-4.58 ms. Not measured: handhelds, desktops, `--release-opt` builds (whose PGO
+  speeds the lifted functions up). Direct calls from the lifter with a register contract were left out: about 1 ns of
+  stub and dispatch plus a few ns of register stores per call, at most about 0.5% of the render thread, with the
+  hottest `memcpy` callers reaching the stub by tail calls.
 - Testing: LAS Recomp's differential harness, every lifted instruction class checked against Unicorn (test-only, never linked into the game).
 
 ### 3. Host

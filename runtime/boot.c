@@ -323,6 +323,7 @@ void rt_boot(void) {
     if (!rt_config()->shot) vk_pipeline_async_enable();   // a --shot image must not depend on build timing
     // Shaders and pipelines recorded in earlier runs are made ready while the modules load; the guest waits for them.
     PlatThread *warm = plat_thread_new(prewarm_main, NULL, "prewarm");
+    libc_init();   // host_libc: its overrides must be in place before the relocations
     ldr_load(rt_config()->exefs);
     rt_patches_init();
     mods_exefs_switch();   // after the patch sets' settings: an enabled mod's ExeFS patches on

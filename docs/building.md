@@ -308,6 +308,9 @@ upscaled path), whose log counts the frames resolved, with the scene and output 
 `AC_ANTI_ALIASING=dlaa|xess|fsr3` in the environment still runs that upscaler in its native mode. A change to
 `recomp/patches-v101.txt`'s `scene` set or to `resolution.c`'s scene sizes wants such a run per mode, in handheld
 (`AC_OPERATION_MODE=handheld`) too.
+A change to `runtime/ov_libc.c` (the host memcpy, memset, memmove, memcmp, strlen, strcmp, strncmp) passes
+`--probe-libc` (game files): each host function against the sdk's lifted one on the same inputs, which must report 0
+mismatches, then a timing table of both per size.
 A change to the per-object motion code (`runtime/vk_mvprev.c`, the "per-object motion" section of
 `runtime/vk_exec_draw.c`) wants the same run with `AC_UPSCALING=xess` to show the `mv_prev:` and `per-object motion:` log lines
 with draws drawn again; `AC_DLAA_MVDEBUG=1` with `--shot` shows the vectors (x red, y green) in place of the picture.

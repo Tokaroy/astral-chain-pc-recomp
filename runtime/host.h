@@ -118,6 +118,14 @@ GuestFn hostfn_observer(const char *name);                 // NULL if none
 void hostfn_add_override(const char *name, GuestFn fn);    // an override outside the linker table (probes); before
                                                            // ldr_load
 const char *hostfn_name(uint64_t addr);                    // name registered at a synthetic address, NULL if none
+// The sdk's libc on host code (ov_libc.c). libc_init: before ldr_load, binds memset, memmove, memcmp, strlen, strcmp
+// and strncmp when host_libc is on (memcpy is a linked override either way); libc_bind_all binds them whatever the
+// setting (--probe-libc); libc_host_fn: the host function of one of those names or memcpy, NULL for another;
+// libc_ab_frame: perf_present, every present, for AC_HOST_LIBC_AB's in-launch A/B.
+void libc_init(void);
+void libc_bind_all(void);
+GuestFn libc_host_fn(const char *name);
+void libc_ab_frame(void);
 void hostfn_seal(void);                                    // build the dispatch table (rt_dispatch_init over every
                                                            // linked module); idempotent; registration ends here
 uint64_t hostfn_calls(void);                               // host-function calls so far, all threads (0 in play
@@ -202,6 +210,8 @@ int ldr_count(void);
 const RtLoaded *ldr_module(int i);                         // order: main, subsdk0, sdk
 uint64_t ldr_symbol(const char *name);                     // exported definition, 0 if none
 uint64_t ldr_plt_stub(const char *module, const char *name); // PLT stub whose GOT slot holds name, 0 if none
+int ldr_jump_slots(const char *name, uint64_t *out, int max); // the GOT slots of every module's JUMP_SLOT relocations
+                                                           // of name (at most max), their count
 const char *ldr_describe(uint64_t a, char *buf, int n);    // "main+0x1234 (symbol+0x10)", "host <name>", or the address
 uint8_t *ldr_read_verified(const char *dir, const char *file, size_t *len);   // whole file, SHA-256 checked against
                                                            // modules.c (fatal on mismatch); free() it
@@ -361,6 +371,7 @@ int probe_cfg(void);                                       // cfg_probe.c
 int probe_dpi(void);                                       // dpi_probe_win.c (Windows only)
 int probe_mods(void);                                      // mods_probe.c
 int probe_loader(void), probe_kernel(void), probe_ipc(void), probe_services(void), probe_fs(void);
+int probe_libc(void);                                      // libc_probe.c
 int probe_gfx_abi(void);                                   // gfx_abi_probe.c
 int probe_vkdevice(void);                                 // vk_device.c
 int probe_xess(void);                                     // vk_xess.c

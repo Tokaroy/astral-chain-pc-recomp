@@ -328,6 +328,7 @@ void perf_present(uint64_t frame) {
     uint64_t rep = ft_frame(frame, now, d);   // d is 0 on the first present: it only starts the period
     ab_b += rt_ab();
     cpu_placement();
+    libc_ab_frame();
     if (__atomic_load_n(&overlay, __ATOMIC_RELAXED))   // the overlay's only cost while it is off: this branch
         perfmon_frame(now, d, frame_ns, rep, __atomic_load_n(&counts[PERF_CNT_TEX_UP], __ATOMIC_RELAXED));
     if (frame % 60 == 0) {   // what plat_cpu_boost arranged, when it changes (the power profile answers after start)
