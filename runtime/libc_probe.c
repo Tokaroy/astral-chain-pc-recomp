@@ -256,7 +256,10 @@ static double time_one(int f, int mode, uint64_t a, uint64_t b, uint64_t n) {
 }
 
 // Each function twice: both pointers 64-byte aligned, then the first one byte and the second four bytes past that
-// (their difference not a multiple of 8, where the sdk's memcmp, strcmp and strncmp go a byte at a time).
+// (their difference not a multiple of 8, where the sdk's memcmp, strcmp and strncmp go a byte at a time). memcpy's
+// source lies a further half page on: a multiple of 4 KiB from the destination, each load had the low 12 address bits
+// of the previous call's store and waited for it (4 KiB aliasing). The other functions do not need it: the compares
+// only load, and memmove is timed overlapping.
 static void timing(void) {
     static const uint64_t sizes[] = {0, 1, 4, 8, 16, 24, 32, 64, 112, 128, 256, 512, 1024, 4096, 65536, 1u << 20, 4u << 20};
     printf("\ntiming, ns per call (median of 9 rounds): lifted direct / host via rt_dispatch / host direct\n");
@@ -273,6 +276,8 @@ static void timing(void) {
                     ga[a + n] = ga[b + n] = 0;
                 } else if (f == F_MEMCMP) {
                     memcpy(ga + b, ga + a, n);   // equal blocks: the whole length is compared
+                } else if (f == F_MEMCPY) {
+                    b += 2048;                   // half a page, see above timing()
                 } else if (f == F_MEMMOVE && n) {
                     b = a + n / 2 + 1;           // overlapping, the destination below the source
                 }

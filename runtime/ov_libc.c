@@ -19,25 +19,26 @@
 // before its first store, so an overlapping copy needs no direction; above, the C runtime's memmove and memset. memcmp
 // compares 64 bytes per step, then 16, then the last 16 overlapping; below 16 bytes two overlapping 8- or 4-byte loads.
 // There is no size gate: a host function cannot hand a size class back to the lifted code for less than the dispatch
-// it already paid (rt_call costs tens of ns). --probe-libc (2026-11-22, this machine) times both, the host function
-// reached through rt_dispatch as the stubs reach it (ns, lifted / host, 64-byte aligned pointers): memset 112 B
-// 6.1 / 2.0, 1 KiB 17.3 / 4.4; memmove 64 B 13.2 / 4.5; memcmp of equal blocks 0 B 1.3 / 1.9, 4 B 2.0 / 1.8, 64 B
-// 3.6 / 2.1, 512 B 26.6 / 5.8; strlen 16 1.6 / 1.9, 32 2.7 / 2.1; strcmp of equal strings 8 1.8 / 2.4, 64 4.2 / 4.0.
-// The host side loses up to 0.6 ns, its dispatch, on the shortest aligned inputs only. With the two pointers 3 bytes
-// out of step, where the sdk's memcmp, strcmp and strncmp go a byte at a time: memcmp 64 B 21.1 / 2.2, 512 B
-// 109.0 / 7.2; strcmp 16 5.9 / 2.4, 64 19.2 / 4.0; strncmp 64 24.3 / 3.9.
+// it already paid (rt_call costs tens of ns). --probe-libc (2026-11-22, Core Ultra 9 285H, Windows, unpinned, with
+// hostfn_direct, median of seven runs) times both, the host function reached through rt_dispatch as the stubs reach it
+// (ns, lifted / host, 64-byte aligned pointers): memcpy 1 B 2.2 / 2.0, 64 B 2.4 / 1.7; memset 112 B 6.1 / 1.8, 1 KiB
+// 17.3 / 4.2; overlapping memmove 64 B 13.2 / 4.8; memcmp of equal blocks 0 B 1.3 / 1.2, 4 B 2.1 / 1.5, 64 B 3.5 / 1.8,
+// 512 B 26.4 / 5.5; strlen 16 1.6 / 1.4, 32 2.8 / 1.5; strcmp of equal strings 1 1.6 / 1.9, 8 1.8 / 1.8, 64 3.9 / 3.3.
+// The host side loses on strcmp of 1 to 4 characters only, by up to 0.4 ns. With the two pointers 3 bytes out of step,
+// where the sdk's memcmp, strcmp and strncmp go a byte at a time: memcmp 64 B 20.1 / 1.8, 512 B 109.0 / 7.0; strcmp 16
+// 5.9 / 1.9, 64 19.4 / 3.2; strncmp 64 21.7 / 3.5.
 //
 // Large blocks. ucrtbase's memmove switches to non-temporal stores between 1 and 1.75 MiB here: a 1.75 MiB copy took
 // 32 us instead of 66, and reading the destination afterwards 65 us instead of 20 (Core Ultra 9 285H, P-core, median of
-// 21; copybench, copy of a just-written source then a read of the destination). Copies from 1 to 8 MiB therefore go in
+// 21; copybench, copy of a just-written source then a read of the destination). On Windows copies from 1 to 8 MiB go in
 // pieces of 256 KiB, each a cached copy: copy then read 4-14% faster from 1.75 to 8 MiB (P-core 2 MiB 110.7 -> 104.5 us,
 // 4 MiB 278.8 -> 263.3; E-core 4 MiB 376.9 -> 324.0, 8 MiB 794 -> 754). Above 8 MiB the pieces lost (16 MiB 1183 ->
 // 1471 us on the P-core: source and destination no longer fit the 24 MiB L3), so those stay one call. 512 KiB pieces
 // measured the same as 256, 64 KiB pieces slower. memset showed no such switch up to 8 MiB and stays one call. A
 // preemption point (kern_checkpoint, valid on a guest thread as at an SVC) follows each piece: host code is never
-// moved by the asynchronous preemption. Linux: plat_mem_will_write over the destination of a copy or fill of 64 KiB or
-// more, one call instead of a write-watch fault per page. The game copies 1.75 MiB or more only while it loads (three
-// memcpy and five to seven memset of that size per run, none in play), so in play the pieces change nothing.
+// moved by the asynchronous preemption. The game copies 1.75 MiB or more only while it loads (three memcpy and five to
+// seven memset of that size per run, none in play), so in play the pieces change nothing. Elsewhere a copy is one
+// memmove of any size, with no preemption point inside (the Linux figures are below).
 //
 // Measured in the game (2026-11-22, Core Ultra 9 285H with the Arc 140T, a plain build, the game pinned to four E-cores
 // as a CPU-bound stand-in, the motorway chase of the opening at 60 fps; the profile's save holds only the start of the
@@ -57,13 +58,34 @@
 //   change the host memcmp took 1.6% of the render thread, about what the lifted one took: its time is the cache
 //   misses on the blocks it compares, as the CPU study of 2026-11-17 found (tools/cpu_study/ov_libc.c, its own host
 //   memcmp and memset, about -0.6% then).
-// - Direct calls from the lifter (helpers with a register contract in place of the stub call) were not made: the probe
-//   puts the stub and dispatch they would save at about 1 ns a call, the hottest memcpy callers reach the stub by tail
-//   calls from small wrappers (main+0x9b1700 copies 64 bytes), and the register stores the call site would skip come
-//   to a few ns, so about 0.5% of the render thread's time at most, the level a cross-launch comparison cannot resolve
-//   here, for a re-lift and a new PGO profile.
-// Not measured: a Steam Deck, a Z1 Extreme or a desktop, and a --release-opt build, whose PGO and ThinLTO make the
-// lifted functions (generated code) faster and the gain smaller.
+// - Direct calls from the lifter (helpers with a register contract in place of the stub call) were not made: the stub
+//   and dispatch they would save were put at about 1 ns a call (since hostfn_direct the probe's dispatch alone is
+//   mostly 0.1-0.5 ns), the hottest memcpy callers reach the stub by tail calls from small wrappers (main+0x9b1700 copies 64
+//   bytes), and the register stores the call site would skip come to a few ns, so about 0.5% of the render thread's
+//   time at most, the level a cross-launch comparison cannot resolve here, for a re-lift and a new PGO profile.
+//
+// Measured on Linux (2026-11-21, ROG Ally, Z1 Extreme at 15 W, glibc 2.44, Steam Deck profile, 4 cores / 8 threads,
+// the town and headquarters saves with the camera turning):
+// - No plat_mem_will_write here. Until this date copies and fills of 64 KiB or more called it, to save a write-watch
+//   fault per page; on pages that are not protected the ioctl costs about twice the copy (--probe-libc, ns: memcpy
+//   64 KiB 2,794 -> 925 without it, the lifted one 873; memset 64 KiB 2,210 -> 450, the lifted one 964). Three town
+//   loads with every other call timed without it: 94% of the 1.3 GiB such calls move per load had no protected page
+//   and took 54 ns/KiB longer with the ioctl; blocks mostly protected, under 3% of the bytes, copied up to twice as
+//   fast with it. All copies together: 816 ns/KiB without, 860 with, about 55 ms of CPU time per load, summed over
+//   threads (the load itself was not timed). For memset the game's 200 or so such calls, of very different sizes, did
+//   not settle it: that half rests on the probe. None of that size seen in play. (The probe's memcpy source then lay
+//   4 MiB from its destination, so with 4 KiB aliasing; not timed again on the Ally since the probe moved it.)
+// - No lower threshold either. Of 285 write faults a frame in the town, 30 were copies of 128 bytes or less (a page
+//   each) and 14 came from the 75 or so memsets a frame of 4 to 32 KiB: an ioctl for each would cost more.
+// - guest_read left as it is: 62 to 68 copies a frame of 1 KiB or more, none of 220,000 checks found a stale texture,
+//   vk_texture_cpu_stale 0.01% of the one thread it showed on.
+// - No pieces. glibc switches to non-temporal stores and rep movsb at 12 MiB here (3/4 of the L3), above every size
+//   the pieces cover, so one call already is a cached copy and the cuts only cost: 1-4% of copy + read up to 4 MiB,
+//   up to 7% at 6-8 MiB (200-400 cycles a cut up to 4 MiB, not the calls themselves: a loop of one piece costs
+//   nothing). With the threshold lowered to 1 or 3 MiB by tunables the pieces win again, but that says nothing sure
+//   of a Deck: it leaves the L3 at 16 MiB, and the largest gains were misaligned rep movsb copies, slow on Zen 4.
+// Not measured: a real Steam Deck (Zen 2, 4 MiB of L3), a desktop, and a --release-opt build, whose PGO and ThinLTO
+// make the lifted functions (generated code) faster and the gain smaller.
 #include <immintrin.h>
 #include <stdint.h>
 #include <string.h>
@@ -71,7 +93,6 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
-#include "platform/platform.h"
 
 static inline uint64_t ld64(const void *p) { uint64_t v; memcpy(&v, p, 8); return v; }
 static inline uint32_t ld32(const void *p) { uint32_t v; memcpy(&v, p, 4); return v; }
@@ -239,6 +260,7 @@ static inline void move_small(uint8_t *d, const uint8_t *s, size_t n) {
 }
 
 // ---- large blocks
+#ifdef _WIN32   // pieces, against ucrtbase's early switch to non-temporal stores ("Large blocks" above)
 #define PIECE (256u << 10)
 #define PIECES_FROM (1u << 20)
 #define PIECES_TO (8u << 20)
@@ -248,7 +270,6 @@ static inline void preempt_point(Cpu *c) {
 }
 
 static void move_large(Cpu *c, uint8_t *d, const uint8_t *s, size_t n) {
-    if (n >= (64u << 10)) plat_mem_will_write((uint64_t)(uintptr_t)d, n);
     if (n <= PIECES_FROM || n > PIECES_TO) {
         memmove(d, s, n);
         return;
@@ -267,6 +288,12 @@ static void move_large(Cpu *c, uint8_t *d, const uint8_t *s, size_t n) {
         }
     }
 }
+#else
+static inline void move_large(Cpu *c, uint8_t *d, const uint8_t *s, size_t n) {
+    (void)c;
+    memmove(d, s, n);
+}
+#endif
 
 // ---- the host functions (AAPCS64: x0-x2 in, x0 out; nothing else written: x0 already holds the destination for the
 // copies and the fill)
@@ -292,7 +319,6 @@ static void ov_memset(Cpu *c) {
     if (n <= 128) {
         set_small(d, v, n);
     } else {
-        if (n >= (64u << 10)) plat_mem_will_write(c->x[0], n);
         memset(d, v, n);
     }
 }

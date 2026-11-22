@@ -71,19 +71,27 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
   calls back. The results match the sdk's in every register the caller sees (`memcmp` and the string compares return
   the difference of the first unequal bytes, zero-extended; the host functions write x0 and nothing else), which
   `--probe-libc` checks against the lifted functions. Up to 128 bytes the copies and fills are overlapping SSE stores;
-  copies of 1 to 8 MiB go in 256 KiB pieces, because ucrtbase's `memmove` switches to non-temporal stores between 1
-  and 1.75 MiB and the next read of the destination then misses the cache (copy then read 4-14% faster from 1.75 to
-  8 MiB in pieces; the game copies such sizes only while it loads). Measured on the Core Ultra 9 285H with the game
+  on Windows copies of 1 to 8 MiB go in 256 KiB pieces, because ucrtbase's `memmove` switches to non-temporal stores
+  between 1 and 1.75 MiB and the next read of the destination then misses the cache (copy then read 4-14% faster from
+  1.75 to 8 MiB in pieces; the game copies such sizes only while it loads). On Linux they are one `memmove`: glibc's
+  switch was at 12 MiB on a ROG Ally, where the pieces cost 1-7%; not measured on a real Deck. Measured on the
+  Core Ultra 9 285H with the game
   pinned to four E-cores, in the motorway chase of the opening at 60 fps (2026-11-22; the profile's only save is the
   start of the game, so no fight on foot or Neuron headquarters run was possible): before, the six lifted functions,
   their stubs and `memcpy`'s path took 2.3-2.9% of the render thread's running samples (`memcmp` 1.5-1.9%: the
   uniform block compare at main+0x9d6510 and `strstr`); the render thread makes about 7,000 of these calls a frame,
   5,500 of them `memcpy`. With `host_libc` on, two in-launch A/Bs (`AC_HOST_LIBC_AB=1`, `AC_AB=16`) gave the render
   thread -2.5% and -3.0% guest time per frame (+-1.7 and +-1.9), and across six alternated launches its CPU time per
-  frame went from 5.17-5.25 ms to 3.66-4.58 ms. Not measured: handhelds, desktops, `--release-opt` builds (whose PGO
-  speeds the lifted functions up). Direct calls from the lifter with a register contract were left out: about 1 ns of
-  stub and dispatch plus a few ns of register stores per call, at most about 0.5% of the render thread, with the
-  hottest `memcpy` callers reaching the stub by tail calls.
+  frame went from 5.17-5.25 ms to 3.66-4.58 ms. On Linux (ROG Ally at 15 W, 2026-11-21) the copies and fills of
+  64 KiB or more no longer lift the write watch ahead (`plat_mem_will_write`): nearly all their pages are unprotected,
+  and on those the ioctl made a 64 KiB `memcpy` three times and a `memset` five times as slow in `--probe-libc` (in
+  the game about 5% of the time of these copies, 55 ms of CPU time summed over a save load; no copy of that size seen
+  in play). A lower threshold and a lock-free test ahead of `guest_read` were measured as
+  not worth it (the header of `ov_libc.c` has the figures). Not measured: a real Steam Deck, desktops, `--release-opt`
+  builds (whose PGO speeds the lifted functions up).
+  Direct calls from the lifter with a register contract were left out: about 1 ns of
+  stub and dispatch (mostly 0.1-0.5 ns for the dispatch alone since `hostfn_direct`) plus a few ns of register stores
+  per call, at most about 0.5% of the render thread, with the hottest `memcpy` callers reaching the stub by tail calls.
 - Host calls (`runtime/hostfn.c`): on a miss the thread's target cache takes the host function itself in place of
   `hostfn_entry` (`hostfn_direct`, default 1), except for `nn::fs`, `AC_TRACE=host` and `AC_CORE_DIAG`. On a ROG Ally
   at 15 W in the town, four in-launch A/Bs took 1.8-2.5% off the draw command thread's CPU time per frame and 0.3-0.6%
