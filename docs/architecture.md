@@ -161,6 +161,23 @@ Every guest thread is a host thread. Astral Chain assumes Horizon's scheduler: t
 - Vulkan 1.3 back end in place of MacNativeGames' Metal one. At `QueueSubmitCommands` the recorded NVN commands are replayed into Vulkan command buffers (`vk_exec*.c`).
 - Memory pools. Apple's unified memory let MacNativeGames use the game's pools zero-copy. The back end imports the pools as host memory (`VK_EXT_external_memory_host`). On a discrete GPU, pools bound as buffers are mirrored in device-local memory, by the 64 KiB chunks the replay binds, and the pages the CPU wrote in them (write watch, above) are uploaded before a replay; the large storage buffers the shaders write stay in the mirror until the CPU touches them; idle pool regions are made read-only so the write-watch queries skip them (`vk_memory.c`). GPU-rendered textures are written back when the CPU reads them: on a pool invalidate, on a CPU copy, and for small targets once the CPU waits for a fence (`vk_texture.c`).
 - Replay thread. `AC_REPLAY_ASYNC=1` (the default; `=0` turns it off) moves the replay off the submitting thread onto a queue at most one frame behind the game; reads of GPU results wait for the newest writer instead of draining the queue (`vk_backend.c`). It is on because an A/B run on the dev machine with a save load and gameplay showed identical throughput; the waits were under 160 ms over 3,472 frames.
+  Early reads (a CPU read of GPU results waiting for the part of the submission that wrote them, `vk_sync_split`,
+  instead of the whole submission) were measured on 2026-11-22 and not kept. On the motorway the game starts on
+  (Arc 140T, docked 1920x1080 at 60 fps, 85 to 170 s of the run, three runs), with the sync fix described below
+  applied so that the waits were real, a release at the writer's part would save 0.026 ms a frame (median; 0.123 in
+  the worst 600-frame window), against a threshold of 1.5 ms and 4 % of the frame. No texture read-back was seen
+  there. The other blocking waits were on queue syncs, which NVN promises the whole submission: 3,582 of 3,650 of
+  them were 3 or more submissions behind the newest (pacing).
+  Known bug, left in place: `nvnCommandBufferFenceSync` takes the newest submitted value when it is recorded, one
+  submission early. The game polls such a sync with a zero timeout in a loop without a yield (main+0x89e784), then
+  maps the results: in seven runs of that ride 18 to 1,767 of about 2,430 polls answered "signalled" before the
+  submission could have completed. No wrong picture or value was observed, and what those results are used for is not
+  known. The fix tried gave the sync the value of the submission that carries it: no poll was early in five runs and
+  the mean stayed at the 60 fps cap, but the worst frame at two places of the ride went from 61.9 to 70.6 ms and from
+  25.0 to 34.9 ms (four runs against five, alternated), and a sync whose command buffer is never submitted would keep
+  that loop spinning for good. It needs a guard against that, and a scene where the bug shows, before it ships.
+  Not measured: Harmony Square, the headquarters and the scenes with grass read-backs (both save slots tried start at
+  the opening movie), the Steam Deck and discrete GPUs.
 - Low latency (`low_latency = off|on|boost`, `vk_lowlat.c`, off by default). The pacer lets the game start a frame
   two periods before its display slot (three window textures), so the pad read for a frame happened 33 ms before its
   present at 60 fps and 67 ms at 30 fps. A frame starts when the game acquires its window texture
